@@ -1,41 +1,104 @@
-# Interview Notes
+# 技术说明
 
-## Difference From Generic GPT Code Review
+本文档整理 CodeAudit-Agent 的关键技术点，帮助理解项目为什么采用当前实现方式。
 
-Generic GPT review often sends broad code context directly to an LLM and asks for suggestions. CodeAudit-Agent is scanner-first: deterministic tools create candidate findings, then the Agent extracts evidence and asks the analyzer to reason only over those findings.
+## 与普通 LLM 代码审查的区别
 
-## LangGraph Role
+普通 LLM 代码审查通常会把大段代码直接发送给模型，然后让模型给出建议。这种方式容易出现上下文过大、结果不可复现、误报难解释和幻觉等问题。
 
-LangGraph provides explicit workflow orchestration. Each node has a clear responsibility, state transition, and trace. This makes the process explainable and easier to extend.
+CodeAudit-Agent 采用扫描优先的方式：
 
-## Tool Calling
+1. 静态扫描器先发现确定性的候选风险。
+2. Agent 提取候选风险附近的证据。
+3. 分析节点只围绕 finding 和证据进行判断。
+4. 报告中保留完整 trace，方便追踪结论来源。
 
-The Agent invokes tools such as `RepoLoaderTool`, `GitDiffTool`, `StaticScanTool`, `ContextExtractorTool`, `RiskAnalyzeTool`, `FalsePositiveReviewTool`, `FixSuggestTool`, and `ReportWriterTool`. Tool boundaries make the workflow modular and testable.
+## LangGraph 的作用
 
-## Component Responsibilities
+LangGraph 用于表达 Agent 的流程编排。
 
-- Scanner: detects concrete risky patterns.
-- Analyzer: explains risk reason, exploit scenario, confidence, and severity.
-- Reviewer: checks likely false positives.
-- FixAdvisor: proposes safe coding patterns and patch hints.
-- Reporter: writes Markdown/JSON reports and exposes trace data.
+在本项目中，它负责把以下节点串联起来：
 
-## Reducing LLM Hallucination
+- 路由
+- 仓库加载
+- diff 加载
+- 静态扫描
+- 上下文提取
+- 风险分析
+- 误报复核
+- 修复建议
+- 报告生成
 
-The LLM is never asked to scan the whole repository directly. It receives scanner findings and evidence, and its output should be validated through Pydantic schemas. The MVP also works without an LLM API by using deterministic templates.
+每个节点输入和输出都通过 `AuditState` 传递，使流程更清晰，也方便后续增加分支、重试和人工复核节点。
 
-## False Positive Filtering
+## Tool Calling 的体现
 
-The review node checks evidence and rule metadata before final recommendations are generated. In later versions, this can combine scanner confidence, test-file heuristics, dataflow, and LLM review.
+项目把每个关键能力封装成工具类：
 
-## Git Diff Detection
+- `RepoLoaderTool`
+- `GitDiffTool`
+- `StaticScanTool`
+- `SecretScanTool`
+- `ContextExtractorTool`
+- `RiskAnalyzeTool`
+- `FalsePositiveReviewTool`
+- `FixSuggestTool`
+- `ReportWriterTool`
 
-`GitDiffTool` accepts pasted unified diff text or loads Git diff from a repository. `diff_parser` reconstructs changed Python file content and records added lines, so the scanner focuses on changed lines for PR-style precheck.
+节点调用工具完成具体任务，工具边界清晰，后续可以替换实现或接入外部服务。
 
-## Why Audited Code Is Not Executed
+## 各角色职责
 
-Running unknown project code can trigger malicious commands, network calls, data deletion, or environment leakage. The MVP only reads text and generates patch hints instead of modifying user code.
+- Scanner：负责发现确定性的风险模式。
+- Analyzer：负责解释风险原因、攻击场景、置信度和严重等级。
+- Reviewer：负责复核可能的误报。
+- FixAdvisor：负责给出安全写法和 patch 提示。
+- Reporter：负责生成 Markdown / JSON 报告并暴露 trace。
 
-## Future Integrations
+## 如何降低 LLM 幻觉
 
-Semgrep and Bandit can be normalized into the `Finding` schema. SARIF export can support GitHub code scanning. A GitHub Action can run `diff_scan` on pull requests and publish report comments.
+项目通过以下方式控制 LLM 输出：
+
+- LLM 不直接扫描整个仓库。
+- LLM 只分析静态扫描产生的候选 finding。
+- 输入中包含明确的规则 ID、文件路径、行号和证据文本。
+- 输出通过结构化 schema 承载。
+- LLM 调用失败时自动回退到规则模板。
+
+## 如何处理误报
+
+误报复核节点会结合 finding 的类别、证据文本和规则信息进行判断。
+
+当前 MVP 使用轻量规则和可选 LLM 复核。后续可以扩展：
+
+- 测试文件和示例文件识别。
+- 数据流分析。
+- 框架语义识别。
+- 多扫描器结果交叉验证。
+
+## Git Diff 检测实现
+
+`GitDiffTool` 支持直接接收 unified diff 文本，也可以从本地仓库读取 Git diff。
+
+`diff_parser` 会重建变更后的 Python 代码片段，并记录新增行位置。这样静态扫描可以只关注本次变更，适合提交前检查和 PR 检测。
+
+## 为什么不执行被审计代码
+
+被审计项目中的代码可能包含未知副作用，例如：
+
+- 删除文件
+- 发起网络请求
+- 读取环境变量
+- 执行系统命令
+- 修改本地数据
+
+因此 CodeAudit-Agent 只读取源代码文本和 diff 文本，不运行被审计项目代码。
+
+## 后续可扩展方向
+
+- 接入 Semgrep、Bandit、Gitleaks。
+- 输出 SARIF，接入 GitHub Code Scanning。
+- 增加 GitHub Action。
+- 支持更多语言。
+- 使用 SQLite 保存历史报告。
+- 增加更严格的 Pydantic 输出校验。
