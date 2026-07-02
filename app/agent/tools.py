@@ -2,10 +2,18 @@ from __future__ import annotations
 
 import json
 import os
+import urllib.error
+import urllib.request
 import uuid
 from collections import Counter
 from pathlib import Path
 from typing import Any
+
+try:
+    from dotenv import load_dotenv
+except Exception:  # pragma: no cover - dependency fallback
+    def load_dotenv() -> bool:
+        return False
 
 class BaseTool:
     name = ""
@@ -18,6 +26,8 @@ from app.scanners.builtin_rules import scan_files
 from app.schemas.finding import Finding, FixSuggestion, ReviewResult, RiskAnalysis
 from app.schemas.report import AuditReport
 from app.utils.file_filter import should_scan_file
+
+load_dotenv()
 
 
 class RepoLoaderTool(BaseTool):
@@ -70,6 +80,10 @@ class RiskAnalyzeTool(BaseTool):
     description: str = "Analyze scanner candidates. Uses rule template when no LLM API is configured."
 
     def run(self, findings: list[Finding]) -> list[RiskAnalysis]:
+        if _llm_enabled():
+            analyses = [_llm_risk_analysis(finding) for finding in findings]
+            if all(analyses):
+                return [item for item in analyses if item is not None]
         return [
             RiskAnalysis(
                 finding_id=f.finding_id,
@@ -88,6 +102,10 @@ class FalsePositiveReviewTool(BaseTool):
     description: str = "Review likely false positives using scanner evidence."
 
     def run(self, findings: list[Finding]) -> list[ReviewResult]:
+        if _llm_enabled():
+            reviews = [_llm_false_positive_review(finding) for finding in findings]
+            if all(reviews):
+                return [item for item in reviews if item is not None]
         results: list[ReviewResult] = []
         for finding in findings:
             evidence = finding.evidence_text.lower()
@@ -114,6 +132,11 @@ class FixSuggestTool(BaseTool):
             review = review_map.get(finding.finding_id)
             if review and review.is_false_positive:
                 continue
+            if _llm_enabled():
+                llm_suggestion = _llm_fix_suggestion(finding)
+                if llm_suggestion:
+                    suggestions.append(llm_suggestion)
+                    continue
             suggestion, safe_code, hint = _fix_for(finding)
             suggestions.append(FixSuggestion(finding_id=finding.finding_id, suggestion=suggestion, safe_code_example=safe_code, patch_hint=hint))
         return suggestions
@@ -173,6 +196,118 @@ def _fix_for(finding: Finding) -> tuple[str, str, str]:
     if finding.category == "Path Traversal":
         return ("Normalize paths and enforce an allowed base directory.", "safe = (base / user_path).resolve(); assert safe.is_relative_to(base)", "Resolve and verify paths before reading files.")
     return ("Review the risky pattern and apply least-privilege validation.", "", "Refactor the flagged line.")
+
+
+def _llm_enabled() -> bool:
+    return bool(os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY"))
+
+
+def _llm_risk_analysis(finding: Finding) -> RiskAnalysis | None:
+    data = _call_llm_json(
+        "You are a code security auditor. Return only compact JSON.",
+        {
+            "task": "Analyze this static-scan finding. Do not invent unrelated issues.",
+            "schema": {
+                "risk_type": "string",
+                "risk_reason": "string",
+                "exploit_scenario": "string",
+                "confidence": "number from 0 to 1",
+                "severity": "low|medium|high|critical",
+            },
+            "finding": finding.model_dump(),
+        },
+    )
+    if not data:
+        return None
+    try:
+        return RiskAnalysis(
+            finding_id=finding.finding_id,
+            risk_type=str(data.get("risk_type") or finding.category),
+            risk_reason=str(data.get("risk_reason") or finding.message),
+            exploit_scenario=str(data.get("exploit_scenario") or _scenario_for(finding)),
+            confidence=max(0.0, min(1.0, float(data.get("confidence", 0.75)))),
+            severity=str(data.get("severity") or finding.severity),
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def _llm_false_positive_review(finding: Finding) -> ReviewResult | None:
+    data = _call_llm_json(
+        "You are reviewing static-scan findings for likely false positives. Return only compact JSON.",
+        {
+            "task": "Decide whether this finding is likely a false positive using only the evidence.",
+            "schema": {
+                "is_false_positive": "boolean",
+                "reason": "string",
+                "final_severity": "low|medium|high|critical",
+            },
+            "finding": finding.model_dump(),
+        },
+    )
+    if not data:
+        return None
+    return ReviewResult(
+        finding_id=finding.finding_id,
+        is_false_positive=bool(data.get("is_false_positive", False)),
+        reason=str(data.get("reason") or "LLM review completed."),
+        final_severity=str(data.get("final_severity") or finding.severity),
+    )
+
+
+def _llm_fix_suggestion(finding: Finding) -> FixSuggestion | None:
+    data = _call_llm_json(
+        "You are a secure coding advisor. Return only compact JSON.",
+        {
+            "task": "Suggest a remediation. Do not modify code automatically.",
+            "schema": {
+                "suggestion": "string",
+                "safe_code_example": "string",
+                "patch_hint": "string",
+            },
+            "finding": finding.model_dump(),
+        },
+    )
+    if not data:
+        return None
+    return FixSuggestion(
+        finding_id=finding.finding_id,
+        suggestion=str(data.get("suggestion") or _fix_for(finding)[0]),
+        safe_code_example=str(data.get("safe_code_example") or _fix_for(finding)[1]),
+        patch_hint=str(data.get("patch_hint") or _fix_for(finding)[2]),
+    )
+
+
+def _call_llm_json(system_prompt: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    api_key = os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return None
+    base_url = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+    model = os.getenv("LLM_MODEL", "gpt-4o-mini")
+    timeout = int(os.getenv("LLM_TIMEOUT_SECONDS", "30"))
+    body = {
+        "model": model,
+        "temperature": 0.1,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        ],
+    }
+    request = urllib.request.Request(
+        f"{base_url}/chat/completions",
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = json.loads(response.read().decode("utf-8"))
+        content = raw["choices"][0]["message"]["content"]
+        parsed = json.loads(content)
+        return parsed if isinstance(parsed, dict) else None
+    except (KeyError, json.JSONDecodeError, urllib.error.URLError, TimeoutError, OSError):
+        return None
 
 
 def _to_markdown(report: AuditReport, state: dict[str, Any]) -> str:

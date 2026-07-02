@@ -103,6 +103,48 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
+## LLM API 配置
+
+系统支持 OpenAI-compatible 的 Chat Completions 接口。配置 API 后，`RiskAnalyzeTool`、`FalsePositiveReviewTool` 和 `FixSuggestTool` 会优先调用 LLM；如果没有配置 API key，或者调用失败，系统会自动使用本地规则模板继续生成分析、复核和修复建议。
+
+复制 `.env.example` 为 `.env`：
+
+```powershell
+Copy-Item .env.example .env
+```
+
+然后填写：
+
+```env
+CODEAUDIT_REPORT_DIR=data/reports
+
+LLM_API_KEY=你的_API_Key
+LLM_BASE_URL=https://api.openai.com/v1
+LLM_MODEL=gpt-4o-mini
+LLM_TIMEOUT_SECONDS=30
+```
+
+也可以只填写 `OPENAI_API_KEY`，系统会在 `LLM_API_KEY` 为空时自动读取它：
+
+```env
+OPENAI_API_KEY=你的_OpenAI_API_Key
+```
+
+如果使用其他兼容 OpenAI API 格式的服务，只需要替换：
+
+```env
+LLM_BASE_URL=https://你的服务地址/v1
+LLM_MODEL=你的模型名称
+LLM_API_KEY=你的_API_Key
+```
+
+注意：
+
+- 不要把真实 API key 提交到 Git。
+- `.env` 只用于本地配置。
+- LLM 只分析静态扫描产生的候选 finding，不会直接扫描整个仓库。
+- 即使不配置 LLM API，基础扫描流程也可以完整运行。
+
 ## 启动 FastAPI
 
 ```powershell
