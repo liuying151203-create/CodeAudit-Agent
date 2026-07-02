@@ -46,10 +46,19 @@ if st.button("Run Audit Agent", type="primary"):
         st.dataframe([trace.model_dump() for trace in report.traces], use_container_width=True)
     with col2:
         st.subheader("Findings")
+        risk_map = {item.finding_id: item for item in state.get("risk_analyses", [])}
+        review_map = {item.finding_id: item for item in state.get("review_results", [])}
         for finding in report.findings:
             with st.expander(f"{finding.severity.upper()} · {finding.rule_id} · {finding.file_path}:{finding.line_start}", expanded=True):
                 st.code(finding.evidence_text, language="python")
                 st.write(finding.message)
+                risk = risk_map.get(finding.finding_id)
+                review = review_map.get(finding.finding_id)
+                if risk:
+                    st.caption(f"Analysis source: {risk.analysis_source}")
+                    st.write(risk.risk_reason)
+                if review:
+                    st.write(f"False positive: {review.is_false_positive}. {review.reason}")
                 suggestions = [item for item in state.get("fix_suggestions", []) if item.finding_id == finding.finding_id]
                 if suggestions:
                     st.markdown(f"**Fix:** {suggestions[0].suggestion}")

@@ -80,10 +80,13 @@ class RiskAnalyzeTool(BaseTool):
     description: str = "Analyze scanner candidates. Uses rule template when no LLM API is configured."
 
     def run(self, findings: list[Finding]) -> list[RiskAnalysis]:
+        fallback_reason = None
         if _llm_enabled():
-            analyses = [_llm_risk_analysis(finding) for finding in findings]
-            if all(analyses):
-                return [item for item in analyses if item is not None]
+            analyses, fallback_reason = _llm_batch_risk_analysis(findings)
+            if analyses is not None:
+                return analyses
+        elif findings:
+            fallback_reason = "LLM API key is not configured."
         return [
             RiskAnalysis(
                 finding_id=f.finding_id,
@@ -92,6 +95,8 @@ class RiskAnalyzeTool(BaseTool):
                 exploit_scenario=_scenario_for(f),
                 confidence=0.86 if f.severity == "high" else 0.72,
                 severity=f.severity,
+                analysis_source="template",
+                fallback_reason=fallback_reason,
             )
             for f in findings
         ]
@@ -102,10 +107,13 @@ class FalsePositiveReviewTool(BaseTool):
     description: str = "Review likely false positives using scanner evidence."
 
     def run(self, findings: list[Finding]) -> list[ReviewResult]:
+        fallback_reason = None
         if _llm_enabled():
-            reviews = [_llm_false_positive_review(finding) for finding in findings]
-            if all(reviews):
-                return [item for item in reviews if item is not None]
+            reviews, fallback_reason = _llm_batch_false_positive_review(findings)
+            if reviews is not None:
+                return reviews
+        elif findings:
+            fallback_reason = "LLM API key is not configured."
         results: list[ReviewResult] = []
         for finding in findings:
             evidence = finding.evidence_text.lower()
@@ -116,6 +124,8 @@ class FalsePositiveReviewTool(BaseTool):
                     is_false_positive=is_fp,
                     reason="Looks like sample placeholder data." if is_fp else "Static evidence matches a risky pattern.",
                     final_severity="low" if is_fp else finding.severity,
+                    analysis_source="template",
+                    fallback_reason=fallback_reason,
                 )
             )
         return results
@@ -127,18 +137,27 @@ class FixSuggestTool(BaseTool):
 
     def run(self, findings: list[Finding], reviews: list[ReviewResult]) -> list[FixSuggestion]:
         review_map = {review.finding_id: review for review in reviews}
+        active_findings = [finding for finding in findings if not (review_map.get(finding.finding_id) and review_map[finding.finding_id].is_false_positive)]
+        fallback_reason = None
+        if _llm_enabled():
+            llm_suggestions, fallback_reason = _llm_batch_fix_suggestions(active_findings)
+            if llm_suggestions is not None:
+                return llm_suggestions
+        elif active_findings:
+            fallback_reason = "LLM API key is not configured."
         suggestions: list[FixSuggestion] = []
-        for finding in findings:
-            review = review_map.get(finding.finding_id)
-            if review and review.is_false_positive:
-                continue
-            if _llm_enabled():
-                llm_suggestion = _llm_fix_suggestion(finding)
-                if llm_suggestion:
-                    suggestions.append(llm_suggestion)
-                    continue
+        for finding in active_findings:
             suggestion, safe_code, hint = _fix_for(finding)
-            suggestions.append(FixSuggestion(finding_id=finding.finding_id, suggestion=suggestion, safe_code_example=safe_code, patch_hint=hint))
+            suggestions.append(
+                FixSuggestion(
+                    finding_id=finding.finding_id,
+                    suggestion=suggestion,
+                    safe_code_example=safe_code,
+                    patch_hint=hint,
+                    analysis_source="template",
+                    fallback_reason=fallback_reason,
+                )
+            )
         return suggestions
 
 
@@ -151,8 +170,14 @@ class ReportWriterTool(BaseTool):
         report_dir = Path(os.getenv("CODEAUDIT_REPORT_DIR", "data/reports"))
         report_dir.mkdir(parents=True, exist_ok=True)
         findings: list[Finding] = state.get("candidate_findings", [])
+        risk_analyses: list[RiskAnalysis] = state.get("risk_analyses", [])
+        review_results: list[ReviewResult] = state.get("review_results", [])
+        fix_suggestions: list[FixSuggestion] = state.get("fix_suggestions", [])
         stats = Counter(f.severity for f in findings)
-        recommendations = [item.suggestion for item in state.get("fix_suggestions", [])]
+        recommendations = [item.suggestion for item in fix_suggestions]
+        analysis_items = [*risk_analyses, *review_results, *fix_suggestions]
+        analysis_summary = Counter(item.analysis_source for item in analysis_items if getattr(item, "analysis_source", None))
+        fallback_reasons = sorted({item.fallback_reason for item in analysis_items if getattr(item, "fallback_reason", None)})
         summary = f"Scanned {len(state.get('scanned_files', []))} files and found {len(findings)} candidate risks."
         markdown_path = report_dir / f"{report_id}.md"
         json_path = report_dir / f"{report_id}.json"
@@ -163,6 +188,11 @@ class ReportWriterTool(BaseTool):
             summary=summary,
             risk_stats=dict(stats),
             findings=findings,
+            risk_analyses=risk_analyses,
+            review_results=review_results,
+            fix_suggestions=fix_suggestions,
+            analysis_summary=dict(analysis_summary),
+            fallback_reasons=fallback_reasons,
             recommendations=recommendations,
             traces=state.get("traces", []),
             markdown_path=str(markdown_path),
@@ -202,86 +232,171 @@ def _llm_enabled() -> bool:
     return bool(os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY"))
 
 
-def _llm_risk_analysis(finding: Finding) -> RiskAnalysis | None:
-    data = _call_llm_json(
+def _llm_batch_risk_analysis(findings: list[Finding]) -> tuple[list[RiskAnalysis] | None, str | None]:
+    if not findings:
+        return [], None
+    data, fallback_reason = _call_llm_json(
         "You are a code security auditor. Return only compact JSON.",
         {
-            "task": "Analyze this static-scan finding. Do not invent unrelated issues.",
+            "task": "Analyze these static-scan findings. Do not invent unrelated issues. Return one result per finding_id.",
             "schema": {
-                "risk_type": "string",
-                "risk_reason": "string",
-                "exploit_scenario": "string",
-                "confidence": "number from 0 to 1",
-                "severity": "low|medium|high|critical",
+                "risk_analyses": [
+                    {
+                        "finding_id": "string",
+                        "risk_type": "string",
+                        "risk_reason": "string",
+                        "exploit_scenario": "string",
+                        "confidence": "number from 0 to 1",
+                        "severity": "low|medium|high|critical",
+                    }
+                ]
             },
-            "finding": finding.model_dump(),
+            "findings": [finding.model_dump() for finding in findings],
         },
     )
     if not data:
-        return None
+        return None, fallback_reason
+    items = data.get("risk_analyses")
+    if not isinstance(items, list):
+        return None, "LLM response missing risk_analyses list."
+    finding_map = {finding.finding_id: finding for finding in findings}
+    seen: set[str] = set()
+    analyses: list[RiskAnalysis] = []
     try:
-        return RiskAnalysis(
-            finding_id=finding.finding_id,
-            risk_type=str(data.get("risk_type") or finding.category),
-            risk_reason=str(data.get("risk_reason") or finding.message),
-            exploit_scenario=str(data.get("exploit_scenario") or _scenario_for(finding)),
-            confidence=max(0.0, min(1.0, float(data.get("confidence", 0.75)))),
-            severity=str(data.get("severity") or finding.severity),
-        )
+        for item in items:
+            if not isinstance(item, dict):
+                return None, "LLM risk analysis item is not an object."
+            finding_id = str(item.get("finding_id") or "")
+            finding = finding_map.get(finding_id)
+            if not finding:
+                continue
+            seen.add(finding_id)
+            analyses.append(
+                RiskAnalysis(
+                    finding_id=finding_id,
+                    risk_type=str(item.get("risk_type") or finding.category),
+                    risk_reason=str(item.get("risk_reason") or finding.message),
+                    exploit_scenario=str(item.get("exploit_scenario") or _scenario_for(finding)),
+                    confidence=max(0.0, min(1.0, float(item.get("confidence", 0.75)))),
+                    severity=str(item.get("severity") or finding.severity),
+                    analysis_source="llm",
+                )
+            )
     except (TypeError, ValueError):
-        return None
+        return None, "LLM risk analysis failed schema coercion."
+    missing = set(finding_map) - seen
+    if missing:
+        return None, f"LLM risk analysis missing finding_ids: {', '.join(sorted(missing))}."
+    return analyses, None
 
 
-def _llm_false_positive_review(finding: Finding) -> ReviewResult | None:
-    data = _call_llm_json(
+def _llm_batch_false_positive_review(findings: list[Finding]) -> tuple[list[ReviewResult] | None, str | None]:
+    if not findings:
+        return [], None
+    data, fallback_reason = _call_llm_json(
         "You are reviewing static-scan findings for likely false positives. Return only compact JSON.",
         {
-            "task": "Decide whether this finding is likely a false positive using only the evidence.",
+            "task": "Decide whether these findings are likely false positives using only the evidence. Return one result per finding_id.",
             "schema": {
-                "is_false_positive": "boolean",
-                "reason": "string",
-                "final_severity": "low|medium|high|critical",
+                "review_results": [
+                    {
+                        "finding_id": "string",
+                        "is_false_positive": "boolean",
+                        "reason": "string",
+                        "final_severity": "low|medium|high|critical",
+                    }
+                ]
             },
-            "finding": finding.model_dump(),
+            "findings": [finding.model_dump() for finding in findings],
         },
     )
     if not data:
-        return None
-    return ReviewResult(
-        finding_id=finding.finding_id,
-        is_false_positive=bool(data.get("is_false_positive", False)),
-        reason=str(data.get("reason") or "LLM review completed."),
-        final_severity=str(data.get("final_severity") or finding.severity),
-    )
+        return None, fallback_reason
+    items = data.get("review_results")
+    if not isinstance(items, list):
+        return None, "LLM response missing review_results list."
+    finding_map = {finding.finding_id: finding for finding in findings}
+    seen: set[str] = set()
+    reviews: list[ReviewResult] = []
+    for item in items:
+        if not isinstance(item, dict):
+            return None, "LLM review item is not an object."
+        finding_id = str(item.get("finding_id") or "")
+        finding = finding_map.get(finding_id)
+        if not finding:
+            continue
+        seen.add(finding_id)
+        reviews.append(
+            ReviewResult(
+                finding_id=finding_id,
+                is_false_positive=bool(item.get("is_false_positive", False)),
+                reason=str(item.get("reason") or "LLM review completed."),
+                final_severity=str(item.get("final_severity") or finding.severity),
+                analysis_source="llm",
+            )
+        )
+    missing = set(finding_map) - seen
+    if missing:
+        return None, f"LLM false-positive review missing finding_ids: {', '.join(sorted(missing))}."
+    return reviews, None
 
 
-def _llm_fix_suggestion(finding: Finding) -> FixSuggestion | None:
-    data = _call_llm_json(
+def _llm_batch_fix_suggestions(findings: list[Finding]) -> tuple[list[FixSuggestion] | None, str | None]:
+    if not findings:
+        return [], None
+    data, fallback_reason = _call_llm_json(
         "You are a secure coding advisor. Return only compact JSON.",
         {
-            "task": "Suggest a remediation. Do not modify code automatically.",
+            "task": "Suggest remediations. Do not modify code automatically. Return one result per finding_id.",
             "schema": {
-                "suggestion": "string",
-                "safe_code_example": "string",
-                "patch_hint": "string",
+                "fix_suggestions": [
+                    {
+                        "finding_id": "string",
+                        "suggestion": "string",
+                        "safe_code_example": "string",
+                        "patch_hint": "string",
+                    }
+                ]
             },
-            "finding": finding.model_dump(),
+            "findings": [finding.model_dump() for finding in findings],
         },
     )
     if not data:
-        return None
-    return FixSuggestion(
-        finding_id=finding.finding_id,
-        suggestion=str(data.get("suggestion") or _fix_for(finding)[0]),
-        safe_code_example=str(data.get("safe_code_example") or _fix_for(finding)[1]),
-        patch_hint=str(data.get("patch_hint") or _fix_for(finding)[2]),
-    )
+        return None, fallback_reason
+    items = data.get("fix_suggestions")
+    if not isinstance(items, list):
+        return None, "LLM response missing fix_suggestions list."
+    finding_map = {finding.finding_id: finding for finding in findings}
+    seen: set[str] = set()
+    suggestions: list[FixSuggestion] = []
+    for item in items:
+        if not isinstance(item, dict):
+            return None, "LLM fix suggestion item is not an object."
+        finding_id = str(item.get("finding_id") or "")
+        finding = finding_map.get(finding_id)
+        if not finding:
+            continue
+        seen.add(finding_id)
+        template_suggestion, template_code, template_hint = _fix_for(finding)
+        suggestions.append(
+            FixSuggestion(
+                finding_id=finding_id,
+                suggestion=str(item.get("suggestion") or template_suggestion),
+                safe_code_example=str(item.get("safe_code_example") or template_code),
+                patch_hint=str(item.get("patch_hint") or template_hint),
+                analysis_source="llm",
+            )
+        )
+    missing = set(finding_map) - seen
+    if missing:
+        return None, f"LLM fix suggestions missing finding_ids: {', '.join(sorted(missing))}."
+    return suggestions, None
 
 
-def _call_llm_json(system_prompt: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+def _call_llm_json(system_prompt: str, payload: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
     api_key = os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY")
     if not api_key:
-        return None
+        return None, "LLM API key is not configured."
     base_url = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/")
     model = os.getenv("LLM_MODEL", "gpt-4o-mini")
     timeout = int(os.getenv("LLM_TIMEOUT_SECONDS", "30"))
@@ -305,20 +420,42 @@ def _call_llm_json(system_prompt: str, payload: dict[str, Any]) -> dict[str, Any
             raw = json.loads(response.read().decode("utf-8"))
         content = raw["choices"][0]["message"]["content"]
         parsed = json.loads(content)
-        return parsed if isinstance(parsed, dict) else None
-    except (KeyError, json.JSONDecodeError, urllib.error.URLError, TimeoutError, OSError):
-        return None
+        if not isinstance(parsed, dict):
+            return None, "LLM response JSON is not an object."
+        return parsed, None
+    except KeyError:
+        return None, "LLM response missing expected chat completion fields."
+    except json.JSONDecodeError:
+        return None, "LLM response is not valid JSON."
+    except TimeoutError:
+        return None, "LLM request timed out."
+    except urllib.error.URLError as exc:
+        return None, f"LLM request failed: {exc.reason}."
+    except OSError as exc:
+        return None, f"LLM request failed: {exc}."
 
 
 def _to_markdown(report: AuditReport, state: dict[str, Any]) -> str:
     fix_map = {item.finding_id: item for item in state.get("fix_suggestions", [])}
     risk_map = {item.finding_id: item for item in state.get("risk_analyses", [])}
+    review_map = {item.finding_id: item for item in state.get("review_results", [])}
     lines = [f"# CodeAudit Report {report.report_id}", "", f"- Mode: {report.mode}", f"- Summary: {report.summary}", "", "## Risk Stats"]
     for key, value in report.risk_stats.items():
         lines.append(f"- {key}: {value}")
+    lines.extend(["", "## Analysis Source"])
+    if report.analysis_summary:
+        for key, value in report.analysis_summary.items():
+            lines.append(f"- {key}: {value}")
+    else:
+        lines.append("- No analysis results.")
+    if report.fallback_reasons:
+        lines.extend(["", "## Fallback Reasons"])
+        for reason in report.fallback_reasons:
+            lines.append(f"- {reason}")
     lines.extend(["", "## Findings"])
     for finding in report.findings:
         risk = risk_map.get(finding.finding_id)
+        review = review_map.get(finding.finding_id)
         fix = fix_map.get(finding.finding_id)
         lines.extend(
             [
@@ -326,6 +463,9 @@ def _to_markdown(report: AuditReport, state: dict[str, Any]) -> str:
                 f"- File: `{finding.file_path}:{finding.line_start}`",
                 f"- Category: {finding.category}",
                 f"- Evidence: `{finding.evidence_text}`",
+                f"- Analysis source: {risk.analysis_source if risk else 'scanner'}",
+                f"- False positive: {review.is_false_positive if review else 'N/A'}",
+                f"- Review reason: {review.reason if review else 'N/A'}",
                 f"- Risk: {risk.risk_reason if risk else finding.message}",
                 f"- Exploit scenario: {risk.exploit_scenario if risk else 'N/A'}",
                 f"- Fix: {fix.suggestion if fix else 'Review manually.'}",

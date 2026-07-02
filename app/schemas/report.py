@@ -1,6 +1,6 @@
 from app.schemas.base import BaseModel
 
-from app.schemas.finding import Finding
+from app.schemas.finding import Finding, FixSuggestion, ReviewResult, RiskAnalysis
 
 
 class AgentTrace(BaseModel):
@@ -19,6 +19,11 @@ class AuditReport(BaseModel):
     summary: str
     risk_stats: dict[str, int]
     findings: list[Finding]
+    risk_analyses: list[RiskAnalysis] = []
+    review_results: list[ReviewResult] = []
+    fix_suggestions: list[FixSuggestion] = []
+    analysis_summary: dict[str, int] = {}
+    fallback_reasons: list[str] = []
     recommendations: list[str]
     traces: list[AgentTrace]
     markdown_path: str

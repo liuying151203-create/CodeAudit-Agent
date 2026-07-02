@@ -65,16 +65,16 @@
 - 支持 OpenAI-compatible LLM API 配置。
 - 实现风险分析、误报复核和修复建议的 LLM 调用。
 - 未配置 LLM 时自动回退到规则模板。
+- 将逐条 LLM 调用优化为批量分析多个 finding，减少请求次数和整体扫描耗时。
+- 在分析结果中记录 `analysis_source`，区分 `llm`、`template` 和 fallback 场景。
+- 记录 LLM fallback 原因，例如 API 超时、JSON 解析失败或结构化校验失败。
 
 后续可优化：
 
 - 增加更严格的结构化输出校验。
 - 为不同风险类型设计专用 prompt。
 - 增加 LLM 调用日志和成本统计。
-- 将逐条 LLM 调用优化为批量分析多个 finding，减少请求次数和整体扫描耗时。
-- 在分析结果中记录 `analysis_source`，区分 `llm`、`template` 和 fallback 场景。
-- 记录 LLM fallback 原因，例如 API 超时、JSON 解析失败或结构化校验失败。
-- 在报告中保留完整的风险分析、误报复核和修复建议结果，方便后续追踪和评估分析质量。
+- 增加 LLM 结果质量评估指标。
 
 ## Phase 6：报告与展示
 
@@ -84,14 +84,15 @@
 - 生成 JSON 报告。
 - 在 Streamlit 中展示扫描结果。
 - 通过 FastAPI 查询报告。
+- JSON 报告中补充 `risk_analyses`、`review_results`、`fix_suggestions` 等中间结果。
+- Markdown 报告中展示分析来源、是否使用 LLM、是否发生 fallback。
 
 后续可优化：
 
 - 增加 SARIF 输出。
 - 增加 HTML 报告。
 - 支持报告对比和历史趋势。
-- JSON 报告中补充 `risk_analyses`、`review_results`、`fix_suggestions` 等中间结果。
-- Markdown 报告中展示分析来源、是否使用 LLM、是否发生 fallback。
+- 在报告中增加更细粒度的分析质量对比视图。
 
 ## Phase 7：工程化集成
 

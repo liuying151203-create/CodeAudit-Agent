@@ -21,6 +21,8 @@ class RiskAnalysis(BaseModel):
     exploit_scenario: str
     confidence: float = Field(ge=0, le=1)
     severity: str
+    analysis_source: str = "template"
+    fallback_reason: str | None = None
 
 
 class ReviewResult(BaseModel):
@@ -28,6 +30,8 @@ class ReviewResult(BaseModel):
     is_false_positive: bool
     reason: str
     final_severity: str
+    analysis_source: str = "template"
+    fallback_reason: str | None = None
 
 
 class FixSuggestion(BaseModel):
@@ -35,3 +39,5 @@ class FixSuggestion(BaseModel):
     suggestion: str
     safe_code_example: str
     patch_hint: str
+    analysis_source: str = "template"
+    fallback_reason: str | None = None
