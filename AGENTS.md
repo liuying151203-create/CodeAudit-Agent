@@ -9,16 +9,16 @@
 格式：
 
 ```text
-<type>(optional-scope): <English summary> \ <中文翻译>
+<type>(optional-scope): <English summary> / <中文翻译>
 ```
 
 示例：
 
 ```text
-feat: add configurable LLM integration \ 新增可配置的 LLM 集成
-fix(streamlit): resolve project import path \ 修复 Streamlit 项目导入路径
-docs: update API usage guide \ 更新 API 使用说明
-chore: ignore generated runtime files \ 忽略运行时生成文件
+feat: add configurable LLM integration / 新增可配置的 LLM 集成
+fix(streamlit): resolve project import path / 修复 Streamlit 项目导入路径
+docs: update API usage guide / 更新 API 使用说明
+chore: ignore generated runtime files / 忽略运行时生成文件
 ```
 
 常用 `type`：
@@ -38,7 +38,7 @@ chore: ignore generated runtime files \ 忽略运行时生成文件
 
 ```powershell
 git add <changed-files>
-git commit -m "<type>: <English summary> \ <中文翻译>"
+git commit -m "<type>: <English summary> / <中文翻译>"
 ```
 
 如果一个阶段同时包含代码和文档，应根据主要变更选择 `type`：
