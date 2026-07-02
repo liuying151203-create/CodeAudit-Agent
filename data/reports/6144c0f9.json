@@ -1,0 +1,157 @@
+{
+  "report_id": "6144c0f9",
+  "mode": "repo_scan",
+  "repo_path": "data/sample_repos/small_python_app",
+  "summary": "Scanned 1 files and found 7 candidate risks.",
+  "risk_stats": {
+    "high": 5,
+    "medium": 2
+  },
+  "findings": [
+    {
+      "finding_id": "PY_SECRET_HARDCODED:app.py:6:1",
+      "rule_id": "PY_SECRET_HARDCODED",
+      "file_path": "app.py",
+      "line_start": 6,
+      "line_end": 6,
+      "severity": "high",
+      "category": "Secrets",
+      "message": "Possible hardcoded secret.",
+      "evidence_text": "password = \"ProdPassword123!\"",
+      "source": "repo"
+    },
+    {
+      "finding_id": "PY_SECRET_HARDCODED:app.py:7:2",
+      "rule_id": "PY_SECRET_HARDCODED",
+      "file_path": "app.py",
+      "line_start": 7,
+      "line_end": 7,
+      "severity": "high",
+      "category": "Secrets",
+      "message": "Possible hardcoded secret.",
+      "evidence_text": "api_key = \"sk_live_123456789\"",
+      "source": "repo"
+    },
+    {
+      "finding_id": "PY_SUBPROCESS_SHELL_TRUE:app.py:15:3",
+      "rule_id": "PY_SUBPROCESS_SHELL_TRUE",
+      "file_path": "app.py",
+      "line_start": 15,
+      "line_end": 15,
+      "severity": "high",
+      "category": "Command Execution",
+      "message": "subprocess with shell=True can execute injected commands.",
+      "evidence_text": "return subprocess.run(command, shell=True, capture_output=True, text=True)",
+      "source": "repo"
+    },
+    {
+      "finding_id": "PY_SQL_STRING_BUILD:app.py:25:4",
+      "rule_id": "PY_SQL_STRING_BUILD",
+      "file_path": "app.py",
+      "line_start": 25,
+      "line_end": 25,
+      "severity": "medium",
+      "category": "SQL Injection",
+      "message": "SQL query appears to be built with string interpolation or concatenation.",
+      "evidence_text": "sql = \"SELECT * FROM users WHERE name = '\" + name + \"'\"",
+      "source": "repo"
+    },
+    {
+      "finding_id": "PY_PATH_TRAVERSAL:app.py:30:5",
+      "rule_id": "PY_PATH_TRAVERSAL",
+      "file_path": "app.py",
+      "line_start": 30,
+      "line_end": 30,
+      "severity": "medium",
+      "category": "Path Traversal",
+      "message": "Path construction includes parent directory traversal.",
+      "evidence_text": "unsafe_path = os.path.join(\"uploads\", \"../\", name)",
+      "source": "repo"
+    },
+    {
+      "finding_id": "PY_DANGEROUS_FUNCTION:app.py:11:6",
+      "rule_id": "PY_DANGEROUS_FUNCTION",
+      "file_path": "app.py",
+      "line_start": 11,
+      "line_end": 11,
+      "severity": "high",
+      "category": "Dangerous Function",
+      "message": "Dangerous call: eval.",
+      "evidence_text": "return eval(user_input)",
+      "source": "repo"
+    },
+    {
+      "finding_id": "PY_DANGEROUS_FUNCTION:app.py:20:7",
+      "rule_id": "PY_DANGEROUS_FUNCTION",
+      "file_path": "app.py",
+      "line_start": 20,
+      "line_end": 20,
+      "severity": "high",
+      "category": "Dangerous Function",
+      "message": "Dangerous call: pickle.load.",
+      "evidence_text": "return pickle.load(handle)",
+      "source": "repo"
+    }
+  ],
+  "recommendations": [
+    "Move secrets to environment variables or a secret manager.",
+    "Move secrets to environment variables or a secret manager.",
+    "Avoid shell=True and pass arguments as a list.",
+    "Use parameterized queries.",
+    "Normalize paths and enforce an allowed base directory.",
+    "Avoid eval/exec and unsafe loaders; use typed parsers or safe_load.",
+    "Avoid eval/exec and unsafe loaders; use typed parsers or safe_load."
+  ],
+  "traces": [
+    {
+      "node_name": "repo_loader_node",
+      "tool_name": "RepoLoaderTool",
+      "input_summary": "data/sample_repos/small_python_app",
+      "output_summary": "completed",
+      "elapsed_ms": 1,
+      "status": "success"
+    },
+    {
+      "node_name": "static_scan_node",
+      "tool_name": "StaticScanTool",
+      "input_summary": "1 files",
+      "output_summary": "completed",
+      "elapsed_ms": 0,
+      "status": "success"
+    },
+    {
+      "node_name": "context_extract_node",
+      "tool_name": "ContextExtractorTool",
+      "input_summary": "7 findings",
+      "output_summary": "completed",
+      "elapsed_ms": 1,
+      "status": "success"
+    },
+    {
+      "node_name": "risk_analyze_node",
+      "tool_name": "RiskAnalyzeTool",
+      "input_summary": "7 findings",
+      "output_summary": "completed",
+      "elapsed_ms": 0,
+      "status": "success"
+    },
+    {
+      "node_name": "false_positive_review_node",
+      "tool_name": "FalsePositiveReviewTool",
+      "input_summary": "7 findings",
+      "output_summary": "completed",
+      "elapsed_ms": 0,
+      "status": "success"
+    },
+    {
+      "node_name": "fix_suggest_node",
+      "tool_name": "FixSuggestTool",
+      "input_summary": "7 findings",
+      "output_summary": "completed",
+      "elapsed_ms": 0,
+      "status": "success"
+    }
+  ],
+  "markdown_path": "data\\reports\\6144c0f9.md",
+  "json_path": "data\\reports\\6144c0f9.json"
+}

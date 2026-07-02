@@ -1,0 +1,91 @@
+{
+  "report_id": "80f8a320",
+  "mode": "diff_scan",
+  "repo_path": null,
+  "summary": "Scanned 1 files and found 2 candidate risks.",
+  "risk_stats": {
+    "high": 2
+  },
+  "findings": [
+    {
+      "finding_id": "PY_SECRET_HARDCODED:app.py:6:1",
+      "rule_id": "PY_SECRET_HARDCODED",
+      "file_path": "app.py",
+      "line_start": 6,
+      "line_end": 6,
+      "severity": "high",
+      "category": "Secrets",
+      "message": "Possible hardcoded secret.",
+      "evidence_text": "password = \"ProdPassword123!\"",
+      "source": "diff"
+    },
+    {
+      "finding_id": "PY_SUBPROCESS_SHELL_TRUE:app.py:12:2",
+      "rule_id": "PY_SUBPROCESS_SHELL_TRUE",
+      "file_path": "app.py",
+      "line_start": 12,
+      "line_end": 12,
+      "severity": "high",
+      "category": "Command Execution",
+      "message": "subprocess with shell=True can execute injected commands.",
+      "evidence_text": "return subprocess.run(command, shell=True, capture_output=True, text=True)",
+      "source": "diff"
+    }
+  ],
+  "recommendations": [
+    "Move secrets to environment variables or a secret manager.",
+    "Avoid shell=True and pass arguments as a list."
+  ],
+  "traces": [
+    {
+      "node_name": "diff_loader_node",
+      "tool_name": "GitDiffTool",
+      "input_summary": "provided diff_text",
+      "output_summary": "completed",
+      "elapsed_ms": 0,
+      "status": "success"
+    },
+    {
+      "node_name": "static_scan_node",
+      "tool_name": "StaticScanTool",
+      "input_summary": "1 files",
+      "output_summary": "completed",
+      "elapsed_ms": 0,
+      "status": "success"
+    },
+    {
+      "node_name": "context_extract_node",
+      "tool_name": "ContextExtractorTool",
+      "input_summary": "2 findings",
+      "output_summary": "completed",
+      "elapsed_ms": 0,
+      "status": "success"
+    },
+    {
+      "node_name": "risk_analyze_node",
+      "tool_name": "RiskAnalyzeTool",
+      "input_summary": "2 findings",
+      "output_summary": "completed",
+      "elapsed_ms": 0,
+      "status": "success"
+    },
+    {
+      "node_name": "false_positive_review_node",
+      "tool_name": "FalsePositiveReviewTool",
+      "input_summary": "2 findings",
+      "output_summary": "completed",
+      "elapsed_ms": 0,
+      "status": "success"
+    },
+    {
+      "node_name": "fix_suggest_node",
+      "tool_name": "FixSuggestTool",
+      "input_summary": "2 findings",
+      "output_summary": "completed",
+      "elapsed_ms": 0,
+      "status": "success"
+    }
+  ],
+  "markdown_path": "data\\reports\\80f8a320.md",
+  "json_path": "data\\reports\\80f8a320.json"
+}
