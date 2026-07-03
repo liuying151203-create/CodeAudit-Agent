@@ -3,12 +3,17 @@ from __future__ import annotations
 from app.agent.tools import (
     ContextExtractorTool,
     FixSuggestTool,
+    FindingMergerTool,
     GitDiffTool,
+    ProjectReaderTool,
     RepoLoaderTool,
     ReportWriterTool,
     RiskAnalyzeTool,
     StaticScanTool,
     FalsePositiveReviewTool,
+    ToolExecutorTool,
+    ToolSelectorTool,
+    VulnKBRetrieverTool,
 )
 from app.utils.trace import trace_tool
 
@@ -44,6 +49,70 @@ def diff_loader_node(state: dict) -> dict:
     return state
 
 
+def project_reader_node(state: dict) -> dict:
+    profile, files = trace_tool(
+        state,
+        "project_reader_node",
+        "ProjectReaderTool",
+        str(state.get("repo_path") or f"{len(state.get('scanned_files', []))} loaded files"),
+        lambda: ProjectReaderTool().run(state.get("repo_path"), state.get("scanned_files", [])),
+    )
+    state["project_profile"] = profile
+    state["scanned_files"] = files
+    return state
+
+
+def vulnkb_retriever_node(state: dict) -> dict:
+    state["vuln_knowledge"] = trace_tool(
+        state,
+        "vulnkb_retriever_node",
+        "VulnKBRetrieverTool",
+        f"{len(state.get('project_profile', {}).risk_surfaces if state.get('project_profile') else [])} risk surfaces",
+        lambda: VulnKBRetrieverTool().run(state.get("project_profile"), state.get("mode", "")),
+    )
+    return state
+
+
+def tool_selector_node(state: dict) -> dict:
+    state["tool_plan"] = trace_tool(
+        state,
+        "tool_selector_node",
+        "ToolSelectorTool",
+        state.get("mode", "repo_scan"),
+        lambda: ToolSelectorTool().run(
+            state.get("project_profile"),
+            state.get("vuln_knowledge", []),
+            state.get("mode", "repo_scan"),
+            state.get("scanned_files", []),
+        ),
+    )
+    return state
+
+
+def tool_executor_node(state: dict) -> dict:
+    tool_results, stage_results = trace_tool(
+        state,
+        "tool_executor_node",
+        "ToolExecutorTool",
+        ",".join(state.get("tool_plan").selected_tools if state.get("tool_plan") else []),
+        lambda: ToolExecutorTool().run(state.get("tool_plan"), state.get("scanned_files", []), state.get("mode", "repo_scan")),
+    )
+    state["tool_results"] = tool_results
+    state["audit_stage_results"] = stage_results
+    return state
+
+
+def finding_merger_node(state: dict) -> dict:
+    state["candidate_findings"] = trace_tool(
+        state,
+        "finding_merger_node",
+        "FindingMergerTool",
+        f"{len(state.get('tool_results', []))} tool results",
+        lambda: FindingMergerTool().run(state.get("tool_results", [])),
+    )
+    return state
+
+
 def static_scan_node(state: dict) -> dict:
     state["candidate_findings"] = trace_tool(
         state,
@@ -72,7 +141,7 @@ def risk_analyze_node(state: dict) -> dict:
         "risk_analyze_node",
         "RiskAnalyzeTool",
         f"{len(state.get('candidate_findings', []))} findings",
-        lambda: RiskAnalyzeTool().run(state.get("candidate_findings", [])),
+        lambda: RiskAnalyzeTool().run(state.get("candidate_findings", []), state.get("evidences", [])),
     )
     return state
 
@@ -83,7 +152,7 @@ def false_positive_review_node(state: dict) -> dict:
         "false_positive_review_node",
         "FalsePositiveReviewTool",
         f"{len(state.get('candidate_findings', []))} findings",
-        lambda: FalsePositiveReviewTool().run(state.get("candidate_findings", [])),
+        lambda: FalsePositiveReviewTool().run(state.get("candidate_findings", []), state.get("evidences", [])),
     )
     return state
 
@@ -94,7 +163,7 @@ def fix_suggest_node(state: dict) -> dict:
         "fix_suggest_node",
         "FixSuggestTool",
         f"{len(state.get('candidate_findings', []))} findings",
-        lambda: FixSuggestTool().run(state.get("candidate_findings", []), state.get("review_results", [])),
+        lambda: FixSuggestTool().run(state.get("candidate_findings", []), state.get("review_results", []), state.get("evidences", [])),
     )
     return state
 

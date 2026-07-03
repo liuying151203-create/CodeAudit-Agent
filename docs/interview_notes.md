@@ -102,3 +102,73 @@ LangGraph 用于表达 Agent 的流程编排。
 - 支持更多语言。
 - 使用 SQLite 保存历史报告。
 - 增加更严格的 Pydantic 输出校验。
+
+## 升级后的 Agent 设计
+
+新版本不再只是 Scanner-first 的解释器，而是增加了项目理解和工具选择能力。
+
+参考 Strix、PentAGI、CodeScan、OpenCodeReview 的设计思想后，流程拆成四层：
+
+1. Project Reader：读取源码结构，识别语言、框架、依赖、入口、路由、认证、数据库和上传相关文件。
+2. VulnKB Retriever：根据项目画像检索 SQL 注入、命令注入、密钥泄露、路径穿越、不安全反序列化、访问控制缺陷等漏洞知识。
+3. Tool Selector / Executor：根据项目技术栈、风险面和扫描模式选择内置规则、secret scanner、Bandit、Semgrep、context extractor 等工具。
+4. LLM Reviewer：结合 finding、源码上下文、知识库和工具结果做风险解释、误报复核和修复建议。
+
+这和普通 GPT 审代码的区别是：Agent 不是直接让模型读一堆代码后自由发挥，而是先建立项目画像，再检索漏洞知识，再选择工具，最后让 LLM 基于结构化证据做判断。
+
+## 源码理解如何体现
+
+`ProjectReaderTool` 会扫描项目结构并生成 `ProjectProfile`：
+
+- `languages`
+- `frameworks`
+- `dependency_files`
+- `entrypoints`
+- `route_files`
+- `auth_files`
+- `db_files`
+- `upload_files`
+- `risk_surfaces`
+
+这些信息会影响漏洞知识库检索和工具选择。例如 Python + FastAPI + DB 文件会优先关注 SQL 注入、命令执行、Secrets 和路径穿越。
+
+## 安全工具如何选择
+
+工具能力注册在 `config/security_tools.yaml`。
+
+`ToolSelectorTool` 会根据 `ProjectProfile`、漏洞知识库命中结果和 scan mode 输出 `ToolPlan`：
+
+- `selected_tools`
+- `selected_risk_types`
+- `target_files`
+- `selection_reason`
+
+外部工具未安装时不会强行执行，会记录 skipped，并降级到内置规则扫描。
+
+## 漏洞知识库如何参与审计
+
+`knowledge_base/` 下的漏洞文档描述适用场景、危险代码模式、推荐检测工具、审计关注点和修复建议。
+
+Agent 会把这些知识作为工具选择和风险分析的依据，而不是只依赖静态规则命中。
+
+## 多阶段审计
+
+当前支持阶段：
+
+- init
+- secret
+- injection
+- command
+- file
+- auth
+- review
+- report
+
+MVP 已实现 secret、injection、command 的实际扫描统计，其余阶段作为规划或聚合节点保留。这样后续可以继续扩展成更完整的分阶段审计流程。
+
+## 后续集成方向
+
+- SARIF 输出，用于 GitHub Code Scanning。
+- GitHub Action，用于 PR 自动审计。
+- Semgrep 官方规则集。
+- MCP Tool Server，用于将外部扫描器、知识库或代码索引服务标准化接入。

@@ -1,6 +1,7 @@
 from app.schemas.base import BaseModel
 
 from app.schemas.finding import Finding, FixSuggestion, ReviewResult, RiskAnalysis
+from app.schemas.project import AuditStageResult, ProjectProfile, ToolExecutionResult, ToolPlan, VulnKnowledge
 
 
 class AgentTrace(BaseModel):
@@ -18,6 +19,11 @@ class AuditReport(BaseModel):
     repo_path: str | None = None
     summary: str
     risk_stats: dict[str, int]
+    project_profile: ProjectProfile | None = None
+    vuln_knowledge: list[VulnKnowledge] = []
+    tool_plan: ToolPlan | None = None
+    tool_results: list[ToolExecutionResult] = []
+    audit_stage_results: list[AuditStageResult] = []
     findings: list[Finding]
     risk_analyses: list[RiskAnalysis] = []
     review_results: list[ReviewResult] = []

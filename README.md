@@ -248,3 +248,40 @@ data/sample_repos/sample.diff
 - 接入真实 LLM API，并通过 Pydantic 校验结构化输出。
 - 使用 SQLite 保存历史报告。
 - 支持 JavaScript、Java 等更多语言。
+
+## Agent 审计升级
+
+当前版本在保留 repo_scan / diff_scan 的基础上，增加了更主动的 Agent 审计流程：
+
+```text
+router
+  -> project_reader
+  -> vulnkb_retriever
+  -> tool_selector
+  -> tool_executor
+  -> finding_merger
+  -> context_extractor
+  -> risk_analyzer
+  -> false_positive_reviewer
+  -> fix_advisor
+  -> reporter
+```
+
+设计上参考了 Strix、PentAGI、CodeScan、OpenCodeReview 这类系统的思路：
+
+- 先理解项目源码，形成 ProjectProfile。
+- 根据语言、框架、依赖、路由、认证、数据库和上传面识别风险面。
+- 从漏洞知识库检索相关审计知识。
+- 根据项目画像和知识库命中内容选择安全工具。
+- 使用多阶段审计降低漏报和误报。
+- LLM 不直接无约束扫描整仓，而是结合 finding、源码上下文和漏洞知识做分析、复核和修复建议。
+
+新增输出包括：
+
+- ProjectProfile 项目画像
+- VulnKB 命中条目
+- ToolPlan 工具选择计划
+- ToolExecutionResult 工具执行结果
+- AuditStageResult 多阶段审计结果
+
+外部工具未安装时，系统会降级到内置规则扫描。系统不会执行被审计项目代码，不会自动利用漏洞，也不会自动修改用户代码。

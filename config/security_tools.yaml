@@ -1,0 +1,36 @@
+tools:
+  secret_scanner:
+    supported_languages: [Python, JavaScript, TypeScript, Java, Go]
+    risk_types: [Secrets]
+    supported_modes: [repo_scan, diff_scan]
+    cost_level: low
+    requires_install: false
+    description: Detect hardcoded credentials and sensitive tokens.
+  custom_rule_scanner:
+    supported_languages: [Python]
+    risk_types: [Secrets, SQL Injection, Command Execution, Path Traversal, Unsafe Deserialization]
+    supported_modes: [repo_scan, diff_scan]
+    cost_level: low
+    requires_install: false
+    description: Run builtin Python security rules.
+  bandit:
+    supported_languages: [Python]
+    risk_types: [Command Execution, Path Traversal, Unsafe Deserialization, SQL Injection]
+    supported_modes: [repo_scan]
+    cost_level: medium
+    requires_install: true
+    description: Python security scanner for common unsafe APIs.
+  semgrep:
+    supported_languages: [Python, JavaScript, TypeScript, Java, Go]
+    risk_types: [SQL Injection, Command Execution, Path Traversal, Broken Access Control, Unsafe Deserialization]
+    supported_modes: [repo_scan, diff_scan]
+    cost_level: medium
+    requires_install: true
+    description: Pattern and semantic code scanner with language-specific rules.
+  context_extractor:
+    supported_languages: [Python, JavaScript, TypeScript, Java, Go]
+    risk_types: [Secrets, SQL Injection, Command Execution, Path Traversal, Unsafe Deserialization, Broken Access Control]
+    supported_modes: [repo_scan, diff_scan]
+    cost_level: low
+    requires_install: false
+    description: Extract code context around findings for LLM review.

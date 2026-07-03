@@ -63,3 +63,29 @@ LLM 是可选能力，不是系统运行的强依赖。
 配置 LLM API 后，风险分析、误报复核和修复建议会优先调用 LLM；如果没有 API key 或调用失败，系统会回退到本地规则模板。
 
 LLM 只接收静态扫描产生的候选 finding 和相关证据，不直接扫描整个仓库。
+
+## 主动 Agent 能力
+
+升级后的设计增加了四个主动审计能力：
+
+- Project Reader：理解项目结构并生成安全画像。
+- VulnKB Retriever：根据项目画像检索漏洞知识库。
+- Tool Selector：根据语言、框架、风险面和扫描模式选择工具。
+- Tool Executor：执行内置扫描器或记录外部工具跳过原因。
+
+这使 Agent 不再只是解释静态扫描结果，而是能先理解项目，再决定应该关注哪些风险、调用哪些工具、审计哪些文件。
+
+## 多阶段审计
+
+系统保留以下审计阶段：
+
+- init
+- secret
+- injection
+- command
+- file
+- auth
+- review
+- report
+
+MVP 中 secret、injection、command 已有实际扫描统计。file、auth、review、report 阶段作为后续增强点保留。

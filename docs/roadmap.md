@@ -103,3 +103,23 @@
 - 在 PR 中自动发布审计评论。
 - 使用 SQLite 保存报告元数据。
 - 增加 Dockerfile 和部署说明。
+
+## Phase 8：主动 Agent 审计
+
+已完成：
+
+- 新增 ProjectReaderTool，生成项目画像。
+- 新增 VulnKB 漏洞知识库。
+- 新增安全工具注册表 `config/security_tools.yaml`。
+- 新增 ToolSelectorTool，根据项目画像、知识库和扫描模式选择工具。
+- 新增 ToolExecutorTool 和 FindingMergerTool。
+- 工作流升级为 project_reader、vulnkb_retriever、tool_selector、tool_executor、finding_merger 多节点流程。
+- 报告和 Streamlit 展示项目画像、知识库命中、工具计划、工具执行结果和审计阶段。
+
+后续可优化：
+
+- 接入 Semgrep 官方规则集。
+- 输出 SARIF。
+- 接入 GitHub Action。
+- 接入 MCP Tool Server。
+- 为 Java、JavaScript、Go 增加更完整的项目画像规则。

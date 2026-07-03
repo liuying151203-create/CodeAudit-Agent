@@ -8,6 +8,11 @@ class AuditState(TypedDict, total=False):
     diff_mode: str | None
     changed_files: list[dict[str, Any]]
     scanned_files: list[dict[str, Any]]
+    project_profile: Any
+    vuln_knowledge: list[Any]
+    tool_plan: Any
+    tool_results: list[Any]
+    audit_stage_results: list[Any]
     candidate_findings: list[Any]
     evidences: list[Any]
     risk_analyses: list[Any]

@@ -118,3 +118,32 @@
 - 风险解释
 - 修复建议
 - Agent trace
+
+## 升级后的多阶段工作流
+
+当前工作流已升级为：
+
+```text
+router
+  -> project_reader
+  -> vulnkb_retriever
+  -> tool_selector
+  -> tool_executor
+  -> finding_merger
+  -> context_extractor
+  -> risk_analyzer
+  -> false_positive_reviewer
+  -> fix_advisor
+  -> reporter
+```
+
+diff_scan 模式会先执行 `diff_loader`，再进入 `project_reader`。
+
+关键变化：
+
+- `project_reader` 负责生成项目画像。
+- `vulnkb_retriever` 负责检索漏洞知识库。
+- `tool_selector` 负责选择安全工具和目标文件。
+- `tool_executor` 负责执行可用工具，外部工具不可用时降级。
+- `finding_merger` 负责合并和去重多个工具的 finding。
+- LLM 分析阶段会接收 finding 和上下文证据。

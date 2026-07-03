@@ -40,6 +40,18 @@ if st.button("Run Audit Agent", type="primary"):
 
     col1, col2 = st.columns([1, 2])
     with col1:
+        st.subheader("Project Profile")
+        if report.project_profile:
+            st.json(report.project_profile.model_dump())
+        st.subheader("Vulnerability Knowledge")
+        st.write([item.title for item in report.vuln_knowledge])
+        st.subheader("Tool Plan")
+        if report.tool_plan:
+            st.json(report.tool_plan.model_dump())
+        st.subheader("Tool Results")
+        st.dataframe([item.model_dump() for item in report.tool_results], use_container_width=True)
+        st.subheader("Audit Stages")
+        st.dataframe([item.model_dump() for item in report.audit_stage_results], use_container_width=True)
         st.subheader("Risk Stats")
         st.json(report.risk_stats)
         st.subheader("Agent Trace")

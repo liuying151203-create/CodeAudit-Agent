@@ -23,6 +23,11 @@ def _response(state: dict):
     return {
         "report_id": report.report_id,
         "summary": report.summary,
+        "project_profile": report.project_profile.model_dump() if report.project_profile else None,
+        "vuln_knowledge": [item.model_dump() for item in report.vuln_knowledge],
+        "tool_plan": report.tool_plan.model_dump() if report.tool_plan else None,
+        "tool_results": [item.model_dump() for item in report.tool_results],
+        "audit_stage_results": [item.model_dump() for item in report.audit_stage_results],
         "findings": [finding.model_dump() for finding in report.findings],
         "risk_analyses": [item.model_dump() for item in report.risk_analyses],
         "review_results": [item.model_dump() for item in report.review_results],
