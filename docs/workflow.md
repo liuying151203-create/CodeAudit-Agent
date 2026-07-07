@@ -19,6 +19,182 @@ from app.agent.graph import run_audit
 
 `run_audit` 接收一个 `AuditState` 字典，并返回填充完整的审计状态。
 
+## API 调用链总览
+
+### 调用 `/scan/repo` 时怎么走
+
+入口代码：
+
+```text
+app/api/scan.py::scan_repo
+```
+
+请求：
+
+```http
+POST /scan/repo
+```
+
+请求体：
+
+```json
+{
+  "repo_path": "data/sample_repos/small_python_app"
+}
+```
+
+FastAPI 收到请求后执行：
+
+```python
+state = run_audit({
+    "mode": "repo_scan",
+    "repo_path": request.repo_path,
+    "traces": [],
+    "errors": [],
+})
+```
+
+之后进入：
+
+```text
+app/agent/graph.py::run_audit
+```
+
+如果当前环境安装了 LangGraph，`run_audit` 会执行 `build_graph().invoke(initial_state)`。  
+如果没有 LangGraph，会走文件中定义的顺序 fallback。两条路径执行的节点顺序保持一致。
+
+`/scan/repo` 的实际节点链路：
+
+```text
+scan_repo
+  -> run_audit
+  -> router_node
+  -> project_reader_node
+  -> vulnkb_retriever_node
+  -> tool_selector_node
+  -> tool_executor_node
+  -> finding_merger_node
+  -> context_extract_node
+  -> risk_analyze_node
+  -> false_positive_review_node
+  -> fix_suggest_node
+  -> report_node
+  -> _response
+```
+
+关键状态变化：
+
+```text
+repo_path
+  -> project_profile
+  -> vuln_knowledge
+  -> tool_plan
+  -> tool_results
+  -> candidate_findings
+  -> evidences
+  -> risk_analyses
+  -> review_results
+  -> fix_suggestions
+  -> final_report
+```
+
+最后 `_response` 把 `final_report` 转成 API 响应：
+
+```python
+{
+    "report_id": report.report_id,
+    "summary": report.summary,
+    "project_profile": ...,
+    "vuln_knowledge": ...,
+    "tool_plan": ...,
+    "tool_results": ...,
+    "audit_stage_results": ...,
+    "findings": ...,
+    "risk_analyses": ...,
+    "review_results": ...,
+    "fix_suggestions": ...,
+    "traces": ...,
+    "markdown_path": ...,
+    "json_path": ...,
+}
+```
+
+### 调用 `/scan/diff` 时怎么走
+
+入口代码：
+
+```text
+app/api/scan.py::scan_diff
+```
+
+请求：
+
+```http
+POST /scan/diff
+```
+
+请求体可以直接传 diff：
+
+```json
+{
+  "diff_text": "diff --git a/app.py b/app.py\n..."
+}
+```
+
+也可以让系统根据仓库读取 Git diff：
+
+```json
+{
+  "repo_path": "D:/your/repo",
+  "diff_mode": "cached"
+}
+```
+
+FastAPI 收到请求后执行：
+
+```python
+state = run_audit({
+    "mode": "diff_scan",
+    "repo_path": request.repo_path,
+    "diff_text": request.diff_text,
+    "diff_mode": request.diff_mode,
+    "traces": [],
+    "errors": [],
+})
+```
+
+`/scan/diff` 的实际节点链路：
+
+```text
+scan_diff
+  -> run_audit
+  -> router_node
+  -> diff_loader_node
+  -> project_reader_node
+  -> vulnkb_retriever_node
+  -> tool_selector_node
+  -> tool_executor_node
+  -> finding_merger_node
+  -> context_extract_node
+  -> risk_analyze_node
+  -> false_positive_review_node
+  -> fix_suggest_node
+  -> report_node
+  -> _response
+```
+
+和 `/scan/repo` 相比，`/scan/diff` 多了 `diff_loader_node`。
+
+`diff_loader_node` 会把 diff 文本解析成：
+
+```text
+diff_text
+changed_files
+scanned_files
+```
+
+后续 `ProjectReaderTool`、`ToolSelectorTool`、`ToolExecutorTool` 都基于这些 diff 文件继续工作。也就是说 diff_scan 不会默认扫描整个仓库，而是围绕变更内容做审计。
+
 典型 repo_scan 输入：
 
 ```python
@@ -100,6 +276,375 @@ project_reader
 ```
 
 如果环境中没有安装 LangGraph，`run_audit` 会走同样顺序的 fallback 执行链。fallback 逻辑也在 `app/agent/graph.py`。
+
+## 哪里体现 Agent
+
+本项目的 Agent 不等于“调用一次 LLM”。Agent 体现在以下几个具体机制上：
+
+### 1. 有共享状态
+
+状态定义在：
+
+```text
+app/agent/state.py::AuditState
+```
+
+每个节点都读取和写入同一个 `AuditState`。例如：
+
+- `project_reader_node` 写入 `project_profile`
+- `vulnkb_retriever_node` 写入 `vuln_knowledge`
+- `tool_selector_node` 写入 `tool_plan`
+- `tool_executor_node` 写入 `tool_results`
+- `finding_merger_node` 写入 `candidate_findings`
+- `context_extract_node` 写入 `evidences`
+- `risk_analyze_node` 写入 `risk_analyses`
+- `report_node` 写入 `final_report`
+
+这使流程不是一段线性脚本，而是围绕状态逐步决策和累积上下文。
+
+### 2. 有图编排
+
+图定义在：
+
+```text
+app/agent/graph.py::build_graph
+```
+
+核心代码：
+
+```python
+graph.add_conditional_edges(
+    "router",
+    _route,
+    {"repo_loader": "project_reader", "diff_loader": "diff_loader"},
+)
+```
+
+这里体现了 Agent 的路径选择能力：
+
+- `repo_scan` 直接进入 `project_reader`
+- `diff_scan` 先进入 `diff_loader`，再进入 `project_reader`
+
+后续节点按图连接继续执行。
+
+### 3. 有工具选择
+
+工具选择节点是：
+
+```text
+app/agent/nodes.py::tool_selector_node
+app/agent/tools.py::ToolSelectorTool
+```
+
+它不是固定写死只跑一个扫描器，而是读取：
+
+- `ProjectProfile`
+- `VulnKnowledge`
+- `scan_mode`
+- `config/security_tools.yaml`
+
+然后生成：
+
+```python
+ToolPlan(
+    selected_tools=[...],
+    selected_risk_types=[...],
+    target_files=[...],
+    selection_reason="..."
+)
+```
+
+这是当前版本最关键的 Agent 决策点。
+
+### 4. 有工具执行和降级
+
+工具执行节点是：
+
+```text
+app/agent/nodes.py::tool_executor_node
+app/agent/tools.py::ToolExecutorTool
+```
+
+它根据 `ToolPlan` 执行工具：
+
+- `secret_scanner`
+- `custom_rule_scanner`
+- `bandit`
+- `semgrep`
+- `context_extractor`
+
+外部工具不可用时，不会让流程失败，而是生成 skipped 结果并降级到内置规则扫描。
+
+### 5. 有可解释 trace
+
+所有节点调用都通过：
+
+```text
+app/utils/trace.py::trace_tool
+```
+
+trace 会记录：
+
+- 节点名
+- 工具名
+- 输入摘要
+- 输出摘要
+- 耗时
+- 状态
+
+因此报告里可以看到 Agent 具体走了哪些节点、调用了哪些工具、每一步是否成功。
+
+## 哪里用了 LLM
+
+LLM 只在三个工具中使用：
+
+```text
+app/agent/tools.py::RiskAnalyzeTool
+app/agent/tools.py::FalsePositiveReviewTool
+app/agent/tools.py::FixSuggestTool
+```
+
+底层调用函数是：
+
+```text
+app/agent/tools.py::_call_llm_json
+```
+
+### 1. RiskAnalyzeTool
+
+节点：
+
+```text
+app/agent/nodes.py::risk_analyze_node
+```
+
+调用：
+
+```python
+RiskAnalyzeTool().run(
+    state.get("candidate_findings", []),
+    state.get("evidences", []),
+)
+```
+
+作用：
+
+- 解释风险原因
+- 给出攻击场景
+- 给出置信度
+- 给出严重等级
+
+如果配置了 LLM API，会调用：
+
+```text
+_llm_batch_risk_analysis
+```
+
+如果未配置 LLM API 或 LLM 返回异常，会回退到模板分析。
+
+### 2. FalsePositiveReviewTool
+
+节点：
+
+```text
+app/agent/nodes.py::false_positive_review_node
+```
+
+调用：
+
+```python
+FalsePositiveReviewTool().run(
+    state.get("candidate_findings", []),
+    state.get("evidences", []),
+)
+```
+
+作用：
+
+- 判断 finding 是否可能是误报
+- 给出复核理由
+- 给出最终严重等级
+
+如果配置了 LLM API，会调用：
+
+```text
+_llm_batch_false_positive_review
+```
+
+否则使用本地规则复核。
+
+### 3. FixSuggestTool
+
+节点：
+
+```text
+app/agent/nodes.py::fix_suggest_node
+```
+
+调用：
+
+```python
+FixSuggestTool().run(
+    state.get("candidate_findings", []),
+    state.get("review_results", []),
+    state.get("evidences", []),
+)
+```
+
+作用：
+
+- 对非误报 finding 给出修复建议
+- 给出安全代码示例
+- 给出 patch hint
+
+如果配置了 LLM API，会调用：
+
+```text
+_llm_batch_fix_suggestions
+```
+
+否则使用本地修复模板。
+
+### LLM 实际看到了什么
+
+LLM 不是只看一行 finding。当前会把 finding 和 evidence 合并后发给 LLM：
+
+```text
+app/agent/tools.py::_findings_with_evidence
+```
+
+payload 中包含：
+
+- `finding_id`
+- `rule_id`
+- `file_path`
+- `line_start`
+- `severity`
+- `category`
+- `message`
+- `evidence_text`
+- `code_context`
+- `function_name`
+- `imports`
+- `changed_line`
+- `surrounding_lines`
+
+也就是说，LLM 是在静态工具发现候选问题之后，结合源码上下文进行分析、复核和修复建议。
+
+### LLM 是否真的被调用如何判断
+
+看报告里的：
+
+```text
+analysis_summary
+fallback_reasons
+risk_analyses[].analysis_source
+review_results[].analysis_source
+fix_suggestions[].analysis_source
+```
+
+如果 `analysis_source` 是 `llm`，说明该结果来自 LLM。  
+如果是 `template`，说明走了本地模板。  
+如果存在 `fallback_reasons`，说明 LLM 未配置、超时、返回 JSON 不合法或结构校验失败。
+
+## 工具是怎么被利用的
+
+工具注册表：
+
+```text
+config/security_tools.yaml
+```
+
+工具实现：
+
+```text
+app/agent/tools.py
+```
+
+工具调用发生在 `nodes.py` 中。每个节点只负责调用一个工具，并把工具输出写回 `AuditState`。
+
+### 工具调用关系
+
+```text
+project_reader_node
+  -> ProjectReaderTool.run
+
+vulnkb_retriever_node
+  -> VulnKBRetrieverTool.run
+
+tool_selector_node
+  -> ToolSelectorTool.run
+
+tool_executor_node
+  -> ToolExecutorTool.run
+
+finding_merger_node
+  -> FindingMergerTool.run
+
+context_extract_node
+  -> ContextExtractorTool.run
+
+risk_analyze_node
+  -> RiskAnalyzeTool.run
+
+false_positive_review_node
+  -> FalsePositiveReviewTool.run
+
+fix_suggest_node
+  -> FixSuggestTool.run
+
+report_node
+  -> ReportWriterTool.run
+```
+
+### ToolSelectorTool 如何选工具
+
+输入：
+
+- `ProjectProfile`
+- `VulnKnowledge`
+- `scan_mode`
+- `scanned_files`
+
+工具注册表中的每个工具都有：
+
+- `supported_languages`
+- `risk_types`
+- `supported_modes`
+- `cost_level`
+- `requires_install`
+- `description`
+
+选择逻辑：
+
+1. 工具必须支持当前 scan mode。
+2. 工具语言要匹配项目语言。
+3. 工具风险类型要匹配项目风险面或知识库命中风险。
+4. 如果没有合适工具，补上 `custom_rule_scanner` 作为 fallback。
+
+输出是 `ToolPlan`。
+
+### ToolExecutorTool 如何执行工具
+
+输入：
+
+```python
+ToolExecutorTool().run(
+    plan=state["tool_plan"],
+    files=state["scanned_files"],
+    mode=state["mode"],
+)
+```
+
+当前执行策略：
+
+- `secret_scanner`：运行内置规则，只保留 `Secrets`。
+- `custom_rule_scanner`：运行完整内置规则。
+- `bandit`：检查是否安装；未安装则 skipped。
+- `semgrep`：检查是否安装；未安装则 skipped。
+- `context_extractor`：记录为已选择，实际上下文提取在 `context_extract_node`。
+
+这保证了外部工具没装时 repo_scan / diff_scan 仍能跑通。
 
 ## 1. router
 
