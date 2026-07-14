@@ -13,11 +13,19 @@ def extract_evidence(finding: Finding, files: list[dict[str, Any]]) -> Evidence:
     start = max(finding.line_start - 4, 1)
     end = min(finding.line_end + 4, len(lines))
     surrounding = [f"{idx}: {lines[idx - 1]}" for idx in range(start, end + 1)]
+    function_name = _find_function(lines, finding.line_start)
     return Evidence(
+        evidence_id=f"evidence:{finding.finding_id}",
         finding_id=finding.finding_id,
+        file_path=finding.file_path,
+        start_line=start if lines else finding.line_start,
+        end_line=end if lines else finding.line_end,
+        code_snippet="\n".join(lines[start - 1 : end]),
         code_context="\n".join(surrounding),
-        function_name=_find_function(lines, finding.line_start),
+        symbol_name=function_name,
+        function_name=function_name,
         imports=_find_imports(lines),
+        is_changed_line=finding.line_start in set((file_item or {}).get("changed_lines") or []),
         changed_line=finding.line_start in set((file_item or {}).get("changed_lines") or []),
         surrounding_lines=surrounding,
     )

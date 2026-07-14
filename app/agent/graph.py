@@ -22,7 +22,7 @@ from app.agent.nodes import (
     tool_selector_node,
     vulnkb_retriever_node,
 )
-from app.agent.state import AuditState
+from app.agent.state import AuditState, normalize_audit_state, sync_audit_state
 
 
 def _route(state: AuditState) -> str:
@@ -64,10 +64,11 @@ def build_graph():
 
 
 def run_audit(initial_state: AuditState) -> AuditState:
+    normalized_state = normalize_audit_state(initial_state)
     app = build_graph()
     if app is not None:
-        return app.invoke(initial_state)
-    state = router_node(dict(initial_state))
+        return sync_audit_state(app.invoke(normalized_state))
+    state = router_node(dict(normalized_state))
     if state.get("mode") == "diff_scan":
         state = diff_loader_node(state)
     for node in [
@@ -83,4 +84,4 @@ def run_audit(initial_state: AuditState) -> AuditState:
         report_node,
     ]:
         state = node(state)
-    return state
+    return sync_audit_state(state)

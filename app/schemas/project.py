@@ -1,57 +1,73 @@
 from typing import Any
 
-from app.schemas.base import BaseModel
-from app.schemas.finding import Finding
+from app.schemas.base import BaseModel, Field
+from app.schemas.enums import ProfileScope
+from app.schemas.execution import ToolRunResult
+from app.schemas.runtime import AuditStageResult
 
 
 class ProjectProfile(BaseModel):
-    languages: list[str] = []
-    frameworks: list[str] = []
-    dependency_files: list[str] = []
-    entrypoints: list[str] = []
-    route_files: list[str] = []
-    auth_files: list[str] = []
-    db_files: list[str] = []
-    upload_files: list[str] = []
-    risk_surfaces: list[str] = []
+    languages: list[str] = Field(default_factory=list)
+    frameworks: list[str] = Field(default_factory=list)
+    dependency_files: list[str] = Field(default_factory=list)
+    entrypoints: list[str] = Field(default_factory=list)
+    route_files: list[str] = Field(default_factory=list)
+    auth_files: list[str] = Field(default_factory=list)
+    db_files: list[str] = Field(default_factory=list)
+    upload_files: list[str] = Field(default_factory=list)
+    risk_surfaces: list[str] = Field(default_factory=list)
+    security_signals: list[str] = Field(default_factory=list)
+    profile_scope: ProfileScope = ProfileScope.FULL_REPO
+    profile_confidence: float = Field(default=1.0, ge=0, le=1)
+    missing_context: list[str] = Field(default_factory=list)
 
 
 class VulnKnowledge(BaseModel):
     knowledge_id: str
     title: str
     file_path: str
-    matched_risk_types: list[str] = []
+    risk_type: str | None = None
+    languages: list[str] = Field(default_factory=list)
+    frameworks: list[str] = Field(default_factory=list)
+    dangerous_patterns: list[str] = Field(default_factory=list)
+    recommended_capabilities: list[str] = Field(default_factory=list)
+    audit_focus: list[str] = Field(default_factory=list)
+    fix_guidance: list[str] = Field(default_factory=list)
+    relevance_score: float = Field(default=0.0, ge=0, le=1)
+    match_reasons: list[str] = Field(default_factory=list)
+    matched_risk_types: list[str] = Field(default_factory=list)
     content: str
 
 
 class SecurityTool(BaseModel):
     name: str
-    supported_languages: list[str] = []
-    risk_types: list[str] = []
-    supported_modes: list[str] = []
+    adapter: str | None = None
+    supported_languages: list[str] = Field(default_factory=list)
+    risk_types: list[str] = Field(default_factory=list)
+    capabilities: list[str] = Field(default_factory=list)
+    supported_modes: list[str] = Field(default_factory=list)
     cost_level: str = "low"
     requires_install: bool = False
+    read_only: bool = True
+    timeout_seconds: int = Field(default=30, ge=1, le=600)
     description: str = ""
 
 
 class ToolPlan(BaseModel):
-    selected_tools: list[str] = []
-    selected_risk_types: list[str] = []
-    target_files: list[str] = []
+    selected_tools: list[str] = Field(default_factory=list)
+    selected_risk_types: list[str] = Field(default_factory=list)
+    target_files: list[str] = Field(default_factory=list)
     selection_reason: str = ""
 
 
-class ToolExecutionResult(BaseModel):
-    tool_name: str
-    status: str
-    findings: list[Finding] = []
-    output_summary: str = ""
-    skipped_reason: str | None = None
-    metadata: dict[str, Any] = {}
+ToolExecutionResult = ToolRunResult
 
 
-class AuditStageResult(BaseModel):
-    stage_name: str
-    status: str
-    findings_count: int = 0
-    summary: str = ""
+__all__ = [
+    "AuditStageResult",
+    "ProjectProfile",
+    "SecurityTool",
+    "ToolExecutionResult",
+    "ToolPlan",
+    "VulnKnowledge",
+]

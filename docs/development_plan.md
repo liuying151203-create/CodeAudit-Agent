@@ -40,6 +40,8 @@
 
 ## 3. 阶段一：统一 Schema 与 AuditState
 
+状态：已完成（2026-07-12）。
+
 ### 开发内容
 
 - 新增或重构 `AuditPlan`、`AuditStagePlan`、`ToolRequest`、`ValidatedToolCall`。

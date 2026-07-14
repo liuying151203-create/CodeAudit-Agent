@@ -15,10 +15,12 @@ from app.agent.tools import (
     ToolSelectorTool,
     VulnKBRetrieverTool,
 )
+from app.agent.state import normalize_audit_state, sync_audit_state
 from app.utils.trace import trace_tool
 
 
 def router_node(state: dict) -> dict:
+    state = normalize_audit_state(state)
     state.setdefault("traces", [])
     state.setdefault("errors", [])
     state["mode"] = "diff_scan" if state.get("diff_text") else state.get("mode") or "repo_scan"
@@ -125,13 +127,18 @@ def static_scan_node(state: dict) -> dict:
 
 
 def context_extract_node(state: dict) -> dict:
-    state["evidences"] = trace_tool(
+    evidences = trace_tool(
         state,
         "context_extract_node",
         "ContextExtractorTool",
         f"{len(state.get('candidate_findings', []))} findings",
         lambda: ContextExtractorTool().run(state.get("candidate_findings", []), state.get("scanned_files", [])),
     )
+    state["evidences"] = evidences
+    evidence_ids = {evidence.finding_id: evidence.evidence_id for evidence in evidences}
+    for finding in state.get("candidate_findings", []):
+        if finding.finding_id in evidence_ids:
+            finding.evidence_ids = [evidence_ids[finding.finding_id]]
     return state
 
 
@@ -169,5 +176,6 @@ def fix_suggest_node(state: dict) -> dict:
 
 
 def report_node(state: dict) -> dict:
+    state = sync_audit_state(state)
     state["final_report"] = trace_tool(state, "report_node", "ReportWriterTool", "write report", lambda: ReportWriterTool().run(state))
     return state

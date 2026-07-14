@@ -4,9 +4,15 @@ import json
 from typing import Any
 
 try:
-    from pydantic import BaseModel, Field
+    from pydantic import BaseModel as PydanticBaseModel
+    from pydantic import ConfigDict, Field
+
+    class BaseModel(PydanticBaseModel):
+        model_config = ConfigDict(extra="forbid", validate_assignment=True)
 except Exception:  # pragma: no cover - lightweight runtime fallback
-    def Field(default: Any = None, **_: Any) -> Any:
+    def Field(default: Any = None, *, default_factory: Any = None, **_: Any) -> Any:
+        if default_factory is not None:
+            return default_factory()
         return default
 
     class BaseModel:
@@ -24,7 +30,7 @@ except Exception:  # pragma: no cover - lightweight runtime fallback
                 if key not in annotations:
                     setattr(self, key, value)
 
-        def model_dump(self) -> dict[str, Any]:
+        def model_dump(self, **_: Any) -> dict[str, Any]:
             return {key: _dump(value) for key, value in self.__dict__.items()}
 
         def model_dump_json(self, indent: int | None = None) -> str:
@@ -38,4 +44,6 @@ def _dump(value: Any) -> Any:
         return [_dump(item) for item in value]
     if isinstance(value, dict):
         return {key: _dump(item) for key, item in value.items()}
+    if hasattr(value, "value"):
+        return value.value
     return value

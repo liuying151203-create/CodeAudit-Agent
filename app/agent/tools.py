@@ -25,8 +25,10 @@ from app.diff.diff_parser import parse_unified_diff
 from app.diff.git_diff_loader import load_git_diff
 from app.scanners.builtin_rules import scan_files
 from app.schemas.finding import Finding, FixSuggestion, ReviewResult, RiskAnalysis
+from app.schemas.enums import ProfileScope
 from app.schemas.project import AuditStageResult, ProjectProfile, SecurityTool, ToolExecutionResult, ToolPlan, VulnKnowledge
 from app.schemas.report import AuditReport
+from app.schemas.runtime import AuditMetrics, FallbackRecord
 from app.utils.file_filter import should_scan_file
 
 load_dotenv()
@@ -103,6 +105,19 @@ class ProjectReaderTool(BaseTool):
         db_files = _match_semantic_files(rel_paths, text_by_path, ["db", "database", "model", "mapper", "repository", "sqlite", "sqlalchemy", "cursor.execute"])
         upload_files = _match_semantic_files(rel_paths, text_by_path, ["upload", "file", "multipart", "send_file", "UploadFile"])
         risk_surfaces = _infer_risk_surfaces(frameworks, dependency_files, route_files, auth_files, db_files, upload_files, text_by_path)
+        is_diff = any(item.get("source") == "diff" for item in source_files)
+        if is_diff and root:
+            profile_scope = ProfileScope.DIFF_ENRICHED
+            profile_confidence = 0.8
+            missing_context = ["Only changed files and selected repository context were profiled."]
+        elif is_diff:
+            profile_scope = ProfileScope.DIFF_ONLY
+            profile_confidence = 0.55
+            missing_context = ["Repository files and dependency metadata are unavailable."]
+        else:
+            profile_scope = ProfileScope.FULL_REPO
+            profile_confidence = 1.0
+            missing_context = []
         return (
             ProjectProfile(
                 languages=languages,
@@ -114,6 +129,9 @@ class ProjectReaderTool(BaseTool):
                 db_files=db_files,
                 upload_files=upload_files,
                 risk_surfaces=risk_surfaces,
+                profile_scope=profile_scope,
+                profile_confidence=profile_confidence,
+                missing_context=missing_context,
             ),
             source_files,
         )
@@ -527,6 +545,35 @@ class ReportWriterTool(BaseTool):
         analysis_items = [*risk_analyses, *review_results, *fix_suggestions]
         analysis_summary = Counter(item.analysis_source for item in analysis_items if getattr(item, "analysis_source", None))
         fallback_reasons = sorted({item.fallback_reason for item in analysis_items if getattr(item, "fallback_reason", None)})
+        fallback_records: list[FallbackRecord] = state.get("fallbacks", [])
+        if not fallback_records:
+            fallback_records = [FallbackRecord(component="llm_analysis", reason=reason, strategy="template") for reason in fallback_reasons]
+        confirmed_findings = [
+            finding
+            for finding in findings
+            if not any(review.finding_id == finding.finding_id and review.is_false_positive for review in review_results)
+        ]
+        metrics = state.get("metrics") or AuditMetrics()
+        metrics.detected_findings = len(findings)
+        metrics.confirmed_findings = len(confirmed_findings)
+        metrics.dismissed_findings = len(findings) - len(confirmed_findings)
+        metrics.tool_call_count = len(state.get("tool_results", []))
+        metrics.llm_call_count = sum(
+            [
+                any(item.analysis_source == "llm" for item in risk_analyses),
+                any(item.analysis_source == "llm" for item in review_results),
+                any(item.analysis_source == "llm" for item in fix_suggestions),
+            ]
+        )
+        metrics.fallback_count = len(fallback_records)
+        metrics.total_latency_ms = sum(getattr(trace, "elapsed_ms", 0) for trace in state.get("traces", []))
+        metrics.stage_coverage = {item.stage_name: str(item.status) for item in state.get("audit_stage_results", [])}
+        state["confirmed_findings"] = confirmed_findings
+        state["fallbacks"] = fallback_records
+        state["metrics"] = metrics
+        from app.agent.state import serialize_audit_state, sync_audit_state
+
+        sync_audit_state(state)
         summary = f"Scanned {len(state.get('scanned_files', []))} files and found {len(findings)} candidate risks."
         markdown_path = report_dir / f"{report_id}.md"
         json_path = report_dir / f"{report_id}.json"
@@ -538,17 +585,24 @@ class ReportWriterTool(BaseTool):
             risk_stats=dict(stats),
             project_profile=state.get("project_profile"),
             vuln_knowledge=state.get("vuln_knowledge", []),
+            audit_plan=state.get("audit_plan"),
+            stage_queue=state.get("stage_queue", []),
             tool_plan=state.get("tool_plan"),
             tool_results=state.get("tool_results", []),
             audit_stage_results=state.get("audit_stage_results", []),
+            evidences=state.get("evidences", []),
             findings=findings,
             risk_analyses=risk_analyses,
             review_results=review_results,
             fix_suggestions=fix_suggestions,
             analysis_summary=dict(analysis_summary),
             fallback_reasons=fallback_reasons,
+            fallback_records=fallback_records,
+            budget=state.get("budget"),
+            metrics=metrics,
             recommendations=recommendations,
             traces=state.get("traces", []),
+            state_snapshot=serialize_audit_state(state),
             markdown_path=str(markdown_path),
             json_path=str(json_path),
         )
