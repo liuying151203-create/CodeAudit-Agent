@@ -38,16 +38,27 @@ def scan_text(file_path: str, text: str, changed_lines: set[int] | None = None, 
             )
         )
 
+    suffix = Path(file_path).suffix.lower()
+    rule_prefix = "JAVA" if suffix in {".java", ".xml"} else "PY"
+    lowered_text = text.lower()
     for idx, line in enumerate(lines, start=1):
         if SECRET_PATTERN.search(line):
-            add("PY_SECRET_HARDCODED", idx, "high", "Secrets", "Possible hardcoded secret.", line)
+            add(f"{rule_prefix}_SECRET_HARDCODED", idx, "high", "Secrets", "Possible hardcoded secret.", line)
         if "shell=True" in line and "subprocess" in text:
             add("PY_SUBPROCESS_SHELL_TRUE", idx, "high", "Command Execution", "subprocess with shell=True can execute injected commands.", line)
         if SQL_CONCAT_PATTERN.search(line):
-            add("PY_SQL_STRING_BUILD", idx, "medium", "SQL Injection", "SQL query appears to be built with string interpolation or concatenation.", line)
+            add(f"{rule_prefix}_SQL_STRING_BUILD", idx, "medium", "SQL Injection", "SQL query appears to be built with string interpolation or concatenation.", line)
+        if suffix == ".xml" and "${" in line and any(keyword in lowered_text for keyword in ("select", "insert", "update", "delete")):
+            add("JAVA_MYBATIS_RAW_SUBSTITUTION", idx, "high", "SQL Injection", "MyBatis raw substitution can place untrusted text into SQL.", line)
+        if suffix == ".java" and ("Runtime.getRuntime().exec" in line or "new ProcessBuilder" in line):
+            add("JAVA_COMMAND_EXECUTION", idx, "high", "Command Execution", "Java process execution requires strict argument validation.", line)
+        if suffix == ".java" and ("ObjectInputStream" in line or ".readObject(" in line):
+            add("JAVA_UNSAFE_DESERIALIZATION", idx, "high", "Unsafe Deserialization", "Native Java deserialization can instantiate unsafe object graphs.", line)
         if "../" in line or "..\\" in line:
-            add("PY_PATH_TRAVERSAL", idx, "medium", "Path Traversal", "Path construction includes parent directory traversal.", line)
+            add(f"{rule_prefix}_PATH_TRAVERSAL", idx, "medium", "Path Traversal", "Path construction includes parent directory traversal.", line)
 
+    if suffix != ".py":
+        return findings
     try:
         tree = ast.parse(text)
     except SyntaxError:

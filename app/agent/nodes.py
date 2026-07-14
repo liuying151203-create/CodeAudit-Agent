@@ -10,7 +10,6 @@ from app.agent.tools import (
     RepoLoaderTool,
     ReportWriterTool,
     RiskAnalyzeTool,
-    StaticScanTool,
     FalsePositiveReviewTool,
     ToolExecutorTool,
     ToolSelectorTool,
@@ -105,8 +104,11 @@ def tool_selector_node(state: dict) -> dict:
             state.get("mode", "repo_scan"),
             state.get("scanned_files", []),
             state.get("audit_plan"),
+            state.get("repo_path"),
+            state.get("budget"),
         ),
     )
+    state["validated_tool_calls"] = list(state["tool_plan"].tool_calls)
     return state
 
 
@@ -116,7 +118,12 @@ def tool_executor_node(state: dict) -> dict:
         "tool_executor_node",
         "ToolExecutorTool",
         ",".join(state.get("tool_plan").selected_tools if state.get("tool_plan") else []),
-        lambda: ToolExecutorTool().run(state.get("tool_plan"), state.get("scanned_files", []), state.get("mode", "repo_scan")),
+        lambda: ToolExecutorTool().run(
+            state.get("tool_plan"),
+            state.get("scanned_files", []),
+            state.get("mode", "repo_scan"),
+            state.get("repo_path"),
+        ),
     )
     state["tool_results"] = tool_results
     state["audit_stage_results"] = stage_results
@@ -130,17 +137,6 @@ def finding_merger_node(state: dict) -> dict:
         "FindingMergerTool",
         f"{len(state.get('tool_results', []))} tool results",
         lambda: FindingMergerTool().run(state.get("tool_results", [])),
-    )
-    return state
-
-
-def static_scan_node(state: dict) -> dict:
-    state["candidate_findings"] = trace_tool(
-        state,
-        "static_scan_node",
-        "StaticScanTool",
-        f"{len(state.get('scanned_files', []))} files",
-        lambda: StaticScanTool().run(state.get("scanned_files", [])),
     )
     return state
 

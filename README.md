@@ -142,7 +142,8 @@ app/
   api/              FastAPI 扫描与报告接口
   context/          源码上下文和证据提取
   diff/             Git diff 读取与解析
-  scanners/         内置扫描器和外部工具适配器
+  scanners/         Python/Java 内置安全规则
+  security_tools/   工具注册、选择、执行和外部适配器
   schemas/          Pydantic 结构化模型
   storage/          报告存储
   utils/            文件过滤和 trace
@@ -166,6 +167,14 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
+
+Bandit 是可选的 Python 外部工具，需要时安装：
+
+```powershell
+pip install bandit
+```
+
+Semgrep 和 Gitleaks 按各自平台的官方方式安装，并确保 `semgrep`、`gitleaks` 命令位于 `PATH`。外部工具未安装时，系统会记录 fallback 并使用内置规则继续审计。
 
 ### 2. 配置环境变量
 

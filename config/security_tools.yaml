@@ -1,36 +1,70 @@
 tools:
   secret_scanner:
+    adapter: builtin_secret
+    capabilities: [scan_secrets]
     supported_languages: [Python, JavaScript, TypeScript, Java, Go]
     risk_types: [Secrets]
     supported_modes: [repo_scan, diff_scan]
     cost_level: low
     requires_install: false
+    read_only: true
+    timeout_seconds: 30
     description: Detect hardcoded credentials and sensitive tokens.
   custom_rule_scanner:
-    supported_languages: [Python]
-    risk_types: [Secrets, SQL Injection, Command Execution, Path Traversal, Unsafe Deserialization]
+    adapter: builtin_rules
+    capabilities: [scan_sql_patterns, scan_command_execution, scan_file_paths, scan_deserialization]
+    supported_languages: [Python, Java]
+    risk_types: [SQL Injection, Command Execution, Path Traversal, Unsafe Deserialization]
     supported_modes: [repo_scan, diff_scan]
     cost_level: low
     requires_install: false
-    description: Run builtin Python security rules.
+    read_only: true
+    timeout_seconds: 30
+    description: Run builtin Python and Java security rules.
   bandit:
+    adapter: bandit_json
+    executable: bandit
+    capabilities: [scan_sql_patterns, scan_command_execution, scan_file_paths, scan_deserialization]
     supported_languages: [Python]
     risk_types: [Command Execution, Path Traversal, Unsafe Deserialization, SQL Injection]
     supported_modes: [repo_scan]
     cost_level: medium
     requires_install: true
+    read_only: true
+    timeout_seconds: 90
     description: Python security scanner for common unsafe APIs.
   semgrep:
+    adapter: semgrep_json
+    executable: semgrep
+    capabilities: [scan_sql_patterns, scan_command_execution, scan_file_paths, scan_deserialization, inspect_access_control]
     supported_languages: [Python, JavaScript, TypeScript, Java, Go]
     risk_types: [SQL Injection, Command Execution, Path Traversal, Broken Access Control, Unsafe Deserialization]
     supported_modes: [repo_scan, diff_scan]
     cost_level: medium
     requires_install: true
+    read_only: true
+    timeout_seconds: 120
     description: Pattern and semantic code scanner with language-specific rules.
+  gitleaks:
+    adapter: gitleaks_json
+    executable: gitleaks
+    capabilities: [scan_secrets]
+    supported_languages: [Python, JavaScript, TypeScript, Java, Go]
+    risk_types: [Secrets]
+    supported_modes: [repo_scan]
+    cost_level: medium
+    requires_install: true
+    read_only: true
+    timeout_seconds: 90
+    description: Scan repository content for hardcoded credentials with Gitleaks rules.
   context_extractor:
+    adapter: context_extractor
+    capabilities: [extract_file_context, extract_call_chain, extract_route_auth_context]
     supported_languages: [Python, JavaScript, TypeScript, Java, Go]
     risk_types: [Secrets, SQL Injection, Command Execution, Path Traversal, Unsafe Deserialization, Broken Access Control]
     supported_modes: [repo_scan, diff_scan]
     cost_level: low
     requires_install: false
+    read_only: true
+    timeout_seconds: 30
     description: Extract code context around findings for LLM review.

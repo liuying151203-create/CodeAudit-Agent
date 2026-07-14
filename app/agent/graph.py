@@ -18,7 +18,6 @@ from app.agent.nodes import (
     report_node,
     risk_analyze_node,
     router_node,
-    static_scan_node,
     tool_executor_node,
     tool_selector_node,
     vulnkb_retriever_node,
@@ -43,7 +42,6 @@ def build_graph():
     graph.add_node("tool_selector", tool_selector_node)
     graph.add_node("tool_executor", tool_executor_node)
     graph.add_node("finding_merger", finding_merger_node)
-    graph.add_node("static_scan", static_scan_node)
     graph.add_node("context_extract", context_extract_node)
     graph.add_node("risk_analyze", risk_analyze_node)
     graph.add_node("false_positive_review", false_positive_review_node)

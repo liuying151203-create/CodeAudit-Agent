@@ -8,8 +8,9 @@
 
 - `repo_scan` 和 `diff_scan` 两种入口。
 - 本地仓库文件读取、Git diff 读取和 unified diff 解析。
-- Python 内置规则和 Secret 扫描。
+- Python/Java 内置规则和 Secret 扫描。
 - 支持 Python 与 Java 的 ProjectProfile、结构化漏洞知识检索和动态审计计划。
+- 统一只读工具网关，以及 Semgrep、Bandit、Gitleaks 外部工具适配器。
 - LangGraph 顺序工作流及无 LangGraph 环境下的 fallback。
 - LLM 风险分析、误报复核和修复建议。
 - LLM 未配置或调用失败时的模板降级。
@@ -20,8 +21,7 @@
 
 - `AuditState` 已具备结构化分区，但旧线性流程仍通过适配层运行，阶段队列尚未驱动图循环。
 - Project Reader、漏洞知识检索和 Planner 已完成，尚未接入 Stage Scheduler 外循环。
-- Tool Selector 和 Tool Executor 尚未形成统一安全网关。
-- Semgrep、Bandit 和 Gitleaks 适配器尚未完整执行并归一化结果。
+- 工具网关已完成，但 Stage Scheduler 尚未使用它执行 LLM 发起的补充工具调用。
 - LangGraph 尚未实现 Stage Scheduler 外循环和 Audit Reasoner 工具调用内循环。
 - Finding、Evidence、ReviewResult 和 fallback 的生命周期尚未完全统一。
 - Streamlit 只能在审计完成后集中展示结果，尚未消费 LangGraph 事件流。
@@ -78,6 +78,8 @@
 - AuditPlan 包含动态阶段、目标文件、所需能力和证据目标。
 
 ## 5. 阶段三：统一工具网关
+
+状态：已完成（2026-07-15）。
 
 ### 开发内容
 

@@ -2,7 +2,7 @@ from typing import Any
 
 from app.schemas.base import BaseModel, Field
 from app.schemas.enums import ProfileScope
-from app.schemas.execution import ToolRunResult
+from app.schemas.execution import ToolRunResult, ValidatedToolCall
 from app.schemas.runtime import AuditStageResult
 
 
@@ -42,6 +42,7 @@ class VulnKnowledge(BaseModel):
 class SecurityTool(BaseModel):
     name: str
     adapter: str | None = None
+    executable: str | None = None
     supported_languages: list[str] = Field(default_factory=list)
     risk_types: list[str] = Field(default_factory=list)
     capabilities: list[str] = Field(default_factory=list)
@@ -58,6 +59,10 @@ class ToolPlan(BaseModel):
     selected_risk_types: list[str] = Field(default_factory=list)
     target_files: list[str] = Field(default_factory=list)
     selection_reason: str = ""
+    tool_calls: list[ValidatedToolCall] = Field(default_factory=list)
+    unavailable_tools: list[str] = Field(default_factory=list)
+    rejected_targets: list[str] = Field(default_factory=list)
+    fallback_reasons: list[str] = Field(default_factory=list)
 
 
 ToolExecutionResult = ToolRunResult

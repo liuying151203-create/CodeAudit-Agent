@@ -39,6 +39,8 @@ class Finding(BaseModel):
     message: str
     evidence_text: str
     source: str = "builtin"
+    sources: list[str] = Field(default_factory=list)
+    source_rule_ids: list[str] = Field(default_factory=list)
     risk_type: str | None = None
     confidence: float = Field(default=0.5, ge=0, le=1)
     evidence_ids: list[str] = Field(default_factory=list)
@@ -53,6 +55,10 @@ class Finding(BaseModel):
             raise ValueError("finding line range is invalid")
         if self.risk_type is None:
             object.__setattr__(self, "risk_type", self.category)
+        if not self.sources:
+            object.__setattr__(self, "sources", [self.source])
+        if not self.source_rule_ids:
+            object.__setattr__(self, "source_rule_ids", [self.rule_id])
         return self
 
 

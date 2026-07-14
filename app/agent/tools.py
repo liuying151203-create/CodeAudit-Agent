@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import urllib.error
 import urllib.request
 import uuid
@@ -25,12 +24,12 @@ from app.diff.diff_parser import parse_unified_diff
 from app.diff.git_diff_loader import load_git_diff
 from app.knowledge.retriever import rerank_knowledge, retrieve_vulnerability_knowledge
 from app.project.reader import build_project_profile
-from app.scanners.builtin_rules import scan_files
+from app.security_tools.gateway import execute_tool_plan, select_tool_plan
 from app.schemas.finding import Finding, FixSuggestion, ReviewResult, RiskAnalysis
 from app.schemas.planning import AuditPlan
-from app.schemas.project import AuditStageResult, ProjectProfile, SecurityTool, ToolExecutionResult, ToolPlan, VulnKnowledge
+from app.schemas.project import AuditStageResult, ProjectProfile, ToolExecutionResult, ToolPlan, VulnKnowledge
 from app.schemas.report import AuditReport
-from app.schemas.runtime import AuditMetrics, FallbackRecord
+from app.schemas.runtime import AuditBudget, AuditMetrics, FallbackRecord
 from app.agent.planner import build_planner_payload, build_template_audit_plan, parse_llm_audit_plan
 from app.utils.file_filter import should_scan_file
 
@@ -47,7 +46,7 @@ class RepoLoaderTool(BaseTool):
             raise ValueError(f"repo_path does not exist or is not a directory: {repo_path}")
         files: list[dict[str, Any]] = []
         for path in root.rglob("*"):
-            if path.is_file() and should_scan_file(path):
+            if path.is_file() and not path.is_symlink() and should_scan_file(path):
                 rel = path.relative_to(root).as_posix()
                 files.append({"path": rel, "content": path.read_text(encoding="utf-8", errors="ignore"), "source": "repo"})
         return files
@@ -60,18 +59,6 @@ class GitDiffTool(BaseTool):
     def run(self, repo_path: str | None = None, diff_text: str | None = None, diff_mode: str = "cached") -> tuple[str, list[dict[str, Any]]]:
         text = diff_text or load_git_diff(repo_path or ".", diff_mode)
         return text, parse_unified_diff(text)
-
-
-class StaticScanTool(BaseTool):
-    name: str = "static_scan"
-    description: str = "Run deterministic builtin static scan rules."
-
-    def run(self, files: list[dict[str, Any]]) -> list[Finding]:
-        return scan_files(files)
-
-
-class SecretScanTool(StaticScanTool):
-    name: str = "secret_scan"
 
 
 class ContextExtractorTool(BaseTool):
@@ -160,71 +147,18 @@ class ToolSelectorTool(BaseTool):
         scan_mode: str,
         files: list[dict[str, Any]],
         audit_plan: AuditPlan | None = None,
+        repo_path: str | None = None,
+        budget: AuditBudget | None = None,
     ) -> ToolPlan:
-        tools = _load_security_tools()
-        planned_risks = {risk for stage in (audit_plan.stages if audit_plan else []) for risk in stage.risk_types}
-        risk_types = sorted(planned_risks or ({risk for item in knowledge for risk in item.matched_risk_types} | set(profile.risk_surfaces)))
-        planned_targets = {path for stage in (audit_plan.stages if audit_plan else []) for path in stage.target_files}
-        target_files = sorted(planned_targets) if planned_targets else _select_target_files(profile, files)
-        selected: list[str] = []
-        reasons: list[str] = []
-        for tool in tools:
-            if scan_mode not in tool.supported_modes:
-                continue
-            if not _intersects(profile.languages, tool.supported_languages):
-                continue
-            if not _intersects(risk_types, tool.risk_types):
-                continue
-            selected.append(tool.name)
-            reasons.append(f"{tool.name} matches languages={tool.supported_languages} risk_types={tool.risk_types}")
-        if "Python" in profile.languages and "custom_rule_scanner" not in selected:
-            selected.append("custom_rule_scanner")
-            reasons.append("custom_rule_scanner is the builtin fallback scanner.")
-        return ToolPlan(
-            selected_tools=selected,
-            selected_risk_types=risk_types,
-            target_files=target_files,
-            selection_reason="; ".join(reasons),
-        )
+        return select_tool_plan(profile, knowledge, scan_mode, files, audit_plan, repo_path, budget)
 
 
 class ToolExecutorTool(BaseTool):
     name: str = "tool_executor"
     description: str = "Execute selected security tools safely. External tools are skipped when unavailable."
 
-    def run(self, plan: ToolPlan, files: list[dict[str, Any]], mode: str) -> tuple[list[ToolExecutionResult], list[AuditStageResult]]:
-        target_files = set(plan.target_files)
-        selected_files = [item for item in files if not target_files or item["path"] in target_files]
-        results: list[ToolExecutionResult] = []
-        for tool_name in plan.selected_tools:
-            if tool_name == "secret_scanner":
-                findings = [finding for finding in scan_files(selected_files) if finding.category == "Secrets"]
-                results.append(ToolExecutionResult(tool_name=tool_name, status="success", findings=findings, output_summary=f"{len(findings)} secret findings"))
-            elif tool_name == "custom_rule_scanner":
-                findings = scan_files(selected_files)
-                results.append(ToolExecutionResult(tool_name=tool_name, status="success", findings=findings, output_summary=f"{len(findings)} builtin rule findings"))
-            elif tool_name in {"bandit", "semgrep"}:
-                executable = shutil.which(tool_name)
-                if not executable:
-                    results.append(
-                        ToolExecutionResult(
-                            tool_name=tool_name,
-                            status="skipped",
-                            skipped_reason=f"{tool_name} is not installed; builtin scanners were used instead.",
-                            output_summary="external tool unavailable",
-                        )
-                    )
-                else:
-                    results.append(
-                        ToolExecutionResult(
-                            tool_name=tool_name,
-                            status="skipped",
-                            skipped_reason=f"{tool_name} integration is registered but not executed in MVP safe mode.",
-                            output_summary="registered external tool skipped",
-                        )
-                    )
-            elif tool_name == "context_extractor":
-                results.append(ToolExecutionResult(tool_name=tool_name, status="success", findings=[], output_summary="context extraction runs after finding merge"))
+    def run(self, plan: ToolPlan, files: list[dict[str, Any]], mode: str, repo_path: str | None = None) -> tuple[list[ToolExecutionResult], list[AuditStageResult]]:
+        results = execute_tool_plan(plan, files, repo_path, mode)
         return results, _build_stage_results(results)
 
 
@@ -233,62 +167,27 @@ class FindingMergerTool(BaseTool):
     description: str = "Merge and deduplicate findings emitted by selected tools."
 
     def run(self, tool_results: list[ToolExecutionResult]) -> list[Finding]:
-        merged: dict[tuple[str, str, int, str], Finding] = {}
+        merged: dict[tuple[str, str, int, int], Finding] = {}
+        severity_rank = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
         for result in tool_results:
             for finding in result.findings:
-                key = (finding.rule_id, finding.file_path, finding.line_start, finding.evidence_text)
+                key = (finding.category.lower(), finding.file_path, finding.line_start, finding.line_end)
                 if key not in merged:
                     merged[key] = finding
+                    continue
+                existing = merged[key]
+                sources = list(dict.fromkeys([*existing.sources, *finding.sources]))
+                source_rule_ids = list(dict.fromkeys([*existing.source_rule_ids, *finding.source_rule_ids]))
+                severity = finding.severity if severity_rank[finding.severity] > severity_rank[existing.severity] else existing.severity
+                merged[key] = existing.model_copy(
+                    update={
+                        "severity": severity,
+                        "confidence": max(existing.confidence, finding.confidence),
+                        "sources": sources,
+                        "source_rule_ids": source_rule_ids,
+                    }
+                )
         return list(merged.values())
-
-
-def _load_security_tools() -> list[SecurityTool]:
-    path = Path("config/security_tools.yaml")
-    if not path.exists():
-        return [
-            SecurityTool(name="custom_rule_scanner", supported_languages=["Python"], risk_types=["Secrets", "SQL Injection", "Command Execution"], supported_modes=["repo_scan", "diff_scan"])
-        ]
-    return _parse_security_tools_yaml(path.read_text(encoding="utf-8"))
-
-
-def _parse_security_tools_yaml(text: str) -> list[SecurityTool]:
-    tools: list[SecurityTool] = []
-    current: dict[str, Any] | None = None
-    for raw_line in text.splitlines():
-        line = raw_line.rstrip()
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or stripped == "tools:":
-            continue
-        if line.startswith("  ") and stripped.endswith(":") and not line.startswith("    "):
-            if current:
-                tools.append(SecurityTool(**current))
-            current = {"name": stripped[:-1]}
-            continue
-        if current is not None and ":" in stripped:
-            key, value = stripped.split(":", 1)
-            value = value.strip()
-            if value.startswith("[") and value.endswith("]"):
-                current[key] = [item.strip().strip("\"'") for item in value[1:-1].split(",") if item.strip()]
-            elif value.lower() in {"true", "false"}:
-                current[key] = value.lower() == "true"
-            else:
-                current[key] = value.strip("\"'")
-    if current:
-        tools.append(SecurityTool(**current))
-    return tools
-
-
-def _intersects(left: list[str], right: list[str]) -> bool:
-    if not left or not right:
-        return True
-    return bool({item.lower() for item in left} & {item.lower() for item in right})
-
-
-def _select_target_files(profile: ProjectProfile, files: list[dict[str, Any]]) -> list[str]:
-    priority = set(profile.route_files + profile.auth_files + profile.db_files + profile.upload_files + profile.entrypoints)
-    if priority:
-        return sorted(priority)
-    return sorted([item["path"] for item in files])
 
 
 def _build_stage_results(results: list[ToolExecutionResult]) -> list[AuditStageResult]:
@@ -415,15 +314,24 @@ class ReportWriterTool(BaseTool):
         analysis_summary = Counter(item.analysis_source for item in analysis_items if getattr(item, "analysis_source", None))
         fallback_reasons = sorted({item.fallback_reason for item in analysis_items if getattr(item, "fallback_reason", None)})
         audit_plan: AuditPlan | None = state.get("audit_plan")
+        tool_plan: ToolPlan | None = state.get("tool_plan")
         if audit_plan and audit_plan.fallback_reason:
             fallback_reasons = sorted({*fallback_reasons, audit_plan.fallback_reason})
+        if tool_plan and tool_plan.fallback_reasons:
+            fallback_reasons = sorted({*fallback_reasons, *tool_plan.fallback_reasons})
         fallback_records: list[FallbackRecord] = state.get("fallbacks", [])
         if not fallback_records:
             fallback_records = [
                 FallbackRecord(
-                    component="audit_planner" if audit_plan and reason == audit_plan.fallback_reason else "llm_analysis",
+                    component=(
+                        "audit_planner"
+                        if audit_plan and reason == audit_plan.fallback_reason
+                        else "tool_selector"
+                        if tool_plan and reason in tool_plan.fallback_reasons
+                        else "llm_analysis"
+                    ),
                     reason=reason,
-                    strategy="template",
+                    strategy="builtin_tool" if tool_plan and reason in tool_plan.fallback_reasons else "template",
                 )
                 for reason in fallback_reasons
             ]
@@ -793,6 +701,9 @@ def _to_markdown(report: AuditReport, state: dict[str, Any]) -> str:
                 f"- Selected tools: {', '.join(report.tool_plan.selected_tools) or 'N/A'}",
                 f"- Selected risk types: {', '.join(report.tool_plan.selected_risk_types) or 'N/A'}",
                 f"- Target files: {', '.join(report.tool_plan.target_files) or 'N/A'}",
+                f"- Validated calls: {len(report.tool_plan.tool_calls)}",
+                f"- Unavailable tools: {', '.join(report.tool_plan.unavailable_tools) or 'N/A'}",
+                f"- Rejected targets: {', '.join(report.tool_plan.rejected_targets) or 'N/A'}",
                 f"- Reason: {report.tool_plan.selection_reason}",
             ]
         )
@@ -800,7 +711,8 @@ def _to_markdown(report: AuditReport, state: dict[str, Any]) -> str:
         lines.extend(["", "## Tool Execution"])
         for result in report.tool_results:
             suffix = f" skipped: {result.skipped_reason}" if result.skipped_reason else ""
-            lines.append(f"- {result.tool_name}: {result.status}, {len(result.findings)} findings.{suffix}")
+            fallback = f" fallback: {result.fallback_tool}" if result.fallback_used else ""
+            lines.append(f"- {result.tool_name}: {result.status}, {len(result.findings)} findings.{suffix}{fallback}")
     if report.audit_stage_results:
         lines.extend(["", "## Audit Stages"])
         for stage in report.audit_stage_results:
@@ -825,6 +737,8 @@ def _to_markdown(report: AuditReport, state: dict[str, Any]) -> str:
                 f"### {finding.rule_id} ({finding.severity})",
                 f"- File: `{finding.file_path}:{finding.line_start}`",
                 f"- Category: {finding.category}",
+                f"- Scanner sources: {', '.join(finding.sources)}",
+                f"- Source rule IDs: {', '.join(finding.source_rule_ids)}",
                 f"- Evidence: `{finding.evidence_text}`",
                 f"- Analysis source: {risk.analysis_source if risk else 'scanner'}",
                 f"- False positive: {review.is_false_positive if review else 'N/A'}",

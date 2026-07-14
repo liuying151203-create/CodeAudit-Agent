@@ -19,6 +19,14 @@ sql = "SELECT * FROM users WHERE name = '" + name + "'"
         self.assertIn("PY_SUBPROCESS_SHELL_TRUE", rule_ids)
         self.assertIn("PY_SQL_STRING_BUILD", rule_ids)
 
+    def test_java_and_mybatis_fallback_rules(self):
+        java_findings = scan_text("CommandService.java", 'Runtime.getRuntime().exec(command);\nnew ObjectInputStream(stream);')
+        mapper_findings = scan_text("UserMapper.xml", '<select>SELECT * FROM users WHERE name = "${name}"</select>')
+
+        self.assertIn("JAVA_COMMAND_EXECUTION", {finding.rule_id for finding in java_findings})
+        self.assertIn("JAVA_UNSAFE_DESERIALIZATION", {finding.rule_id for finding in java_findings})
+        self.assertIn("JAVA_MYBATIS_RAW_SUBSTITUTION", {finding.rule_id for finding in mapper_findings})
+
 
 if __name__ == "__main__":
     unittest.main()
