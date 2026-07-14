@@ -1,3 +1,11 @@
+---
+id: path_traversal
+risk_type: Path Traversal
+languages: [Python, Java]
+frameworks: [FastAPI, Flask, Django, Spring Boot, Spring MVC]
+keywords: [path traversal, 路径穿越, upload, download, file]
+capabilities: [scan_file_paths, extract_file_context]
+---
 # 路径穿越
 
 ## 适用场景

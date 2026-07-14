@@ -1,3 +1,11 @@
+---
+id: sql_injection
+risk_type: SQL Injection
+languages: [Python, Java]
+frameworks: [FastAPI, Flask, Django, SQLAlchemy, Spring Boot, Spring MVC, MyBatis]
+keywords: [SQL injection, SQL 注入, database, query, mapper]
+capabilities: [scan_sql_patterns, extract_call_chain]
+---
 # SQL 注入
 
 ## 适用场景

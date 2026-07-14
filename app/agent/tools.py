@@ -23,12 +23,15 @@ class BaseTool:
 from app.context.context_extractor import extract_evidence
 from app.diff.diff_parser import parse_unified_diff
 from app.diff.git_diff_loader import load_git_diff
+from app.knowledge.retriever import rerank_knowledge, retrieve_vulnerability_knowledge
+from app.project.reader import build_project_profile
 from app.scanners.builtin_rules import scan_files
 from app.schemas.finding import Finding, FixSuggestion, ReviewResult, RiskAnalysis
-from app.schemas.enums import ProfileScope
+from app.schemas.planning import AuditPlan
 from app.schemas.project import AuditStageResult, ProjectProfile, SecurityTool, ToolExecutionResult, ToolPlan, VulnKnowledge
 from app.schemas.report import AuditReport
 from app.schemas.runtime import AuditMetrics, FallbackRecord
+from app.agent.planner import build_planner_payload, build_template_audit_plan, parse_llm_audit_plan
 from app.utils.file_filter import should_scan_file
 
 load_dotenv()
@@ -45,7 +48,7 @@ class RepoLoaderTool(BaseTool):
         files: list[dict[str, Any]] = []
         for path in root.rglob("*"):
             if path.is_file() and should_scan_file(path):
-                rel = str(path.relative_to(root))
+                rel = path.relative_to(root).as_posix()
                 files.append({"path": rel, "content": path.read_text(encoding="utf-8", errors="ignore"), "source": "repo"})
         return files
 
@@ -85,56 +88,9 @@ class ProjectReaderTool(BaseTool):
 
     def run(self, repo_path: str | None = None, files: list[dict[str, Any]] | None = None) -> tuple[ProjectProfile, list[dict[str, Any]]]:
         source_files = files or []
-        all_paths: list[Path] = []
-        root: Path | None = None
-        if repo_path:
-            root = Path(repo_path).resolve()
-            if root.exists() and root.is_dir():
-                all_paths = [path for path in root.rglob("*") if path.is_file() and not _is_ignored_path(path)]
-                if not source_files:
-                    source_files = RepoLoaderTool().run(str(root))
-
-        rel_paths = [str(path.relative_to(root)) if root else item["path"] for path in all_paths] if root else [item["path"] for item in source_files]
-        dependency_files = [path for path in rel_paths if Path(path).name.lower() in _DEPENDENCY_FILE_NAMES]
-        text_by_path = _read_profile_text(root, all_paths, source_files)
-        languages = _detect_languages(rel_paths)
-        frameworks = _detect_frameworks(rel_paths, text_by_path)
-        entrypoints = _match_paths(rel_paths, ["main.py", "app.py", "manage.py", "asgi.py", "wsgi.py", "server.py"])
-        route_files = _match_semantic_files(rel_paths, text_by_path, ["route", "router", "urls", "controller", "@app.route", "APIRouter"])
-        auth_files = _match_semantic_files(rel_paths, text_by_path, ["auth", "login", "jwt", "oauth", "permission", "token"])
-        db_files = _match_semantic_files(rel_paths, text_by_path, ["db", "database", "model", "mapper", "repository", "sqlite", "sqlalchemy", "cursor.execute"])
-        upload_files = _match_semantic_files(rel_paths, text_by_path, ["upload", "file", "multipart", "send_file", "UploadFile"])
-        risk_surfaces = _infer_risk_surfaces(frameworks, dependency_files, route_files, auth_files, db_files, upload_files, text_by_path)
-        is_diff = any(item.get("source") == "diff" for item in source_files)
-        if is_diff and root:
-            profile_scope = ProfileScope.DIFF_ENRICHED
-            profile_confidence = 0.8
-            missing_context = ["Only changed files and selected repository context were profiled."]
-        elif is_diff:
-            profile_scope = ProfileScope.DIFF_ONLY
-            profile_confidence = 0.55
-            missing_context = ["Repository files and dependency metadata are unavailable."]
-        else:
-            profile_scope = ProfileScope.FULL_REPO
-            profile_confidence = 1.0
-            missing_context = []
-        return (
-            ProjectProfile(
-                languages=languages,
-                frameworks=frameworks,
-                dependency_files=dependency_files,
-                entrypoints=entrypoints,
-                route_files=route_files,
-                auth_files=auth_files,
-                db_files=db_files,
-                upload_files=upload_files,
-                risk_surfaces=risk_surfaces,
-                profile_scope=profile_scope,
-                profile_confidence=profile_confidence,
-                missing_context=missing_context,
-            ),
-            source_files,
-        )
+        if repo_path and not source_files:
+            source_files = RepoLoaderTool().run(repo_path)
+        return build_project_profile(repo_path, source_files), source_files
 
 
 class VulnKBRetrieverTool(BaseTool):
@@ -142,36 +98,74 @@ class VulnKBRetrieverTool(BaseTool):
     description: str = "Retrieve relevant vulnerability knowledge documents for the project profile and user task."
 
     def run(self, profile: ProjectProfile, task: str = "") -> list[VulnKnowledge]:
-        kb_dir = Path("knowledge_base")
-        if not kb_dir.exists():
-            return []
-        query_terms = {item.lower() for item in [*profile.risk_surfaces, *profile.frameworks, *profile.languages, task] if item}
-        knowledge: list[VulnKnowledge] = []
-        for path in sorted(kb_dir.glob("*.md")):
-            content = path.read_text(encoding="utf-8", errors="ignore")
-            content_lower = content.lower()
-            matched = sorted({term for term in query_terms if term and term in content_lower})
-            if matched or _kb_default_match(path.name, profile):
-                knowledge.append(
-                    VulnKnowledge(
-                        knowledge_id=path.stem,
-                        title=_first_heading(content) or path.stem.replace("_", " ").title(),
-                        file_path=str(path),
-                        matched_risk_types=_risk_types_for_kb(path.stem),
-                        content=content,
-                    )
-                )
+        knowledge = retrieve_vulnerability_knowledge(profile, task)
+        if knowledge and _llm_enabled() and os.getenv("LLM_VULNKB_RERANK", "false").lower() == "true":
+            data, _ = _call_llm_json(
+                "Rank vulnerability knowledge for the supplied project. Return only compact JSON.",
+                {
+                    "task": task,
+                    "project_profile": profile.model_dump(mode="json"),
+                    "candidates": [
+                        {
+                            "knowledge_id": item.knowledge_id,
+                            "risk_type": item.risk_type,
+                            "score": item.relevance_score,
+                            "match_reasons": item.match_reasons,
+                        }
+                        for item in knowledge
+                    ],
+                    "schema": {"ordered_ids": ["knowledge_id"]},
+                },
+            )
+            if data and isinstance(data.get("ordered_ids"), list):
+                knowledge = rerank_knowledge(knowledge, [str(item) for item in data["ordered_ids"]])
         return knowledge
+
+
+class AuditPlannerTool(BaseTool):
+    name: str = "audit_planner"
+    description: str = "Plan risk stages, target files, capabilities and evidence goals from project context."
+
+    def run(
+        self,
+        profile: ProjectProfile,
+        knowledge: list[VulnKnowledge],
+        user_task: str = "",
+        scan_mode: str = "repo_scan",
+    ) -> AuditPlan:
+        template_plan = build_template_audit_plan(profile, knowledge, user_task)
+        if not _llm_enabled():
+            return template_plan
+        data, fallback_reason = _call_llm_json(
+            "You are a security audit planner. Return only compact JSON that follows the supplied schema.",
+            build_planner_payload(profile, knowledge, user_task, scan_mode),
+        )
+        if data:
+            llm_plan = parse_llm_audit_plan(data, template_plan, profile)
+            if llm_plan:
+                return llm_plan
+            fallback_reason = "LLM audit plan did not contain any valid stages."
+        template_plan.fallback_reason = fallback_reason
+        return template_plan
 
 
 class ToolSelectorTool(BaseTool):
     name: str = "tool_selector"
     description: str = "Select security tools based on project profile, retrieved vulnerability knowledge and scan mode."
 
-    def run(self, profile: ProjectProfile, knowledge: list[VulnKnowledge], scan_mode: str, files: list[dict[str, Any]]) -> ToolPlan:
+    def run(
+        self,
+        profile: ProjectProfile,
+        knowledge: list[VulnKnowledge],
+        scan_mode: str,
+        files: list[dict[str, Any]],
+        audit_plan: AuditPlan | None = None,
+    ) -> ToolPlan:
         tools = _load_security_tools()
-        risk_types = sorted({risk for item in knowledge for risk in item.matched_risk_types} | set(profile.risk_surfaces))
-        target_files = _select_target_files(profile, files)
+        planned_risks = {risk for stage in (audit_plan.stages if audit_plan else []) for risk in stage.risk_types}
+        risk_types = sorted(planned_risks or ({risk for item in knowledge for risk in item.matched_risk_types} | set(profile.risk_surfaces)))
+        planned_targets = {path for stage in (audit_plan.stages if audit_plan else []) for path in stage.target_files}
+        target_files = sorted(planned_targets) if planned_targets else _select_target_files(profile, files)
         selected: list[str] = []
         reasons: list[str] = []
         for tool in tools:
@@ -183,7 +177,7 @@ class ToolSelectorTool(BaseTool):
                 continue
             selected.append(tool.name)
             reasons.append(f"{tool.name} matches languages={tool.supported_languages} risk_types={tool.risk_types}")
-        if "custom_rule_scanner" not in selected:
+        if "Python" in profile.languages and "custom_rule_scanner" not in selected:
             selected.append("custom_rule_scanner")
             reasons.append("custom_rule_scanner is the builtin fallback scanner.")
         return ToolPlan(
@@ -246,131 +240,6 @@ class FindingMergerTool(BaseTool):
                 if key not in merged:
                     merged[key] = finding
         return list(merged.values())
-
-
-_DEPENDENCY_FILE_NAMES = {
-    "requirements.txt",
-    "pyproject.toml",
-    "poetry.lock",
-    "pipfile",
-    "package.json",
-    "pom.xml",
-    "build.gradle",
-    "go.mod",
-}
-
-
-def _is_ignored_path(path: Path) -> bool:
-    ignored = {".git", ".venv", "venv", "node_modules", "target", "dist", "__pycache__", ".mypy_cache"}
-    return bool(set(path.parts) & ignored)
-
-
-def _read_profile_text(root: Path | None, all_paths: list[Path], files: list[dict[str, Any]]) -> dict[str, str]:
-    if root:
-        text_by_path: dict[str, str] = {}
-        for path in all_paths:
-            if path.suffix.lower() in {".py", ".txt", ".toml", ".json", ".xml", ".yml", ".yaml", ".md"}:
-                rel = str(path.relative_to(root))
-                text_by_path[rel] = path.read_text(encoding="utf-8", errors="ignore")[:20000]
-        return text_by_path
-    return {item["path"]: item.get("content", "")[:20000] for item in files}
-
-
-def _detect_languages(paths: list[str]) -> list[str]:
-    mapping = {".py": "Python", ".js": "JavaScript", ".ts": "TypeScript", ".java": "Java", ".go": "Go", ".rb": "Ruby"}
-    return sorted({mapping[Path(path).suffix.lower()] for path in paths if Path(path).suffix.lower() in mapping})
-
-
-def _detect_frameworks(paths: list[str], text_by_path: dict[str, str]) -> list[str]:
-    joined = "\n".join(text_by_path.values()).lower()
-    frameworks = []
-    checks = {
-        "FastAPI": ["fastapi", "apirouter"],
-        "Flask": ["flask", "@app.route"],
-        "Django": ["django", "manage.py"],
-        "Spring": ["springframework", "@restcontroller"],
-        "Express": ["express"],
-        "SQLAlchemy": ["sqlalchemy"],
-    }
-    for name, needles in checks.items():
-        if any(needle in joined for needle in needles) or any("manage.py" in path for path in paths if name == "Django"):
-            frameworks.append(name)
-    return sorted(set(frameworks))
-
-
-def _match_paths(paths: list[str], names: list[str]) -> list[str]:
-    names_lower = {name.lower() for name in names}
-    return sorted([path for path in paths if Path(path).name.lower() in names_lower])
-
-
-def _match_semantic_files(paths: list[str], text_by_path: dict[str, str], keywords: list[str]) -> list[str]:
-    matches: set[str] = set()
-    lowered_keywords = [keyword.lower() for keyword in keywords]
-    for path in paths:
-        normalized = path.lower().replace("\\", "/")
-        content = text_by_path.get(path, "").lower()
-        if any(keyword in normalized or keyword in content for keyword in lowered_keywords):
-            matches.add(path)
-    return sorted(matches)
-
-
-def _infer_risk_surfaces(
-    frameworks: list[str],
-    dependency_files: list[str],
-    route_files: list[str],
-    auth_files: list[str],
-    db_files: list[str],
-    upload_files: list[str],
-    text_by_path: dict[str, str],
-) -> list[str]:
-    joined = "\n".join(text_by_path.values()).lower()
-    surfaces = {"Secrets"}
-    if db_files or any(token in joined for token in ["select ", "cursor.execute", "sqlalchemy"]):
-        surfaces.add("SQL Injection")
-    if any(token in joined for token in ["subprocess", "os.system", "shell=true"]):
-        surfaces.add("Command Execution")
-    if upload_files or any(token in joined for token in ["../", "uploadfile", "send_file", "open("]):
-        surfaces.add("Path Traversal")
-    if any(token in joined for token in ["pickle.load", "yaml.load"]):
-        surfaces.add("Unsafe Deserialization")
-    if auth_files or route_files or frameworks:
-        surfaces.add("Broken Access Control")
-    if dependency_files:
-        surfaces.add("Dependency Risk")
-    return sorted(surfaces)
-
-
-def _first_heading(content: str) -> str | None:
-    for line in content.splitlines():
-        if line.startswith("# "):
-            return line[2:].strip()
-    return None
-
-
-def _risk_types_for_kb(stem: str) -> list[str]:
-    mapping = {
-        "sql_injection": ["SQL Injection"],
-        "command_injection": ["Command Execution"],
-        "secret_leak": ["Secrets"],
-        "path_traversal": ["Path Traversal"],
-        "unsafe_deserialization": ["Unsafe Deserialization"],
-        "broken_access_control": ["Broken Access Control"],
-    }
-    return mapping.get(stem, [])
-
-
-def _kb_default_match(file_name: str, profile: ProjectProfile) -> bool:
-    risk_text = " ".join(profile.risk_surfaces).lower()
-    stem = Path(file_name).stem
-    aliases = {
-        "sql_injection": "sql injection",
-        "command_injection": "command execution",
-        "secret_leak": "secrets",
-        "path_traversal": "path traversal",
-        "unsafe_deserialization": "unsafe deserialization",
-        "broken_access_control": "broken access control",
-    }
-    return aliases.get(stem, stem) in risk_text
 
 
 def _load_security_tools() -> list[SecurityTool]:
@@ -545,9 +414,19 @@ class ReportWriterTool(BaseTool):
         analysis_items = [*risk_analyses, *review_results, *fix_suggestions]
         analysis_summary = Counter(item.analysis_source for item in analysis_items if getattr(item, "analysis_source", None))
         fallback_reasons = sorted({item.fallback_reason for item in analysis_items if getattr(item, "fallback_reason", None)})
+        audit_plan: AuditPlan | None = state.get("audit_plan")
+        if audit_plan and audit_plan.fallback_reason:
+            fallback_reasons = sorted({*fallback_reasons, audit_plan.fallback_reason})
         fallback_records: list[FallbackRecord] = state.get("fallbacks", [])
         if not fallback_records:
-            fallback_records = [FallbackRecord(component="llm_analysis", reason=reason, strategy="template") for reason in fallback_reasons]
+            fallback_records = [
+                FallbackRecord(
+                    component="audit_planner" if audit_plan and reason == audit_plan.fallback_reason else "llm_analysis",
+                    reason=reason,
+                    strategy="template",
+                )
+                for reason in fallback_reasons
+            ]
         confirmed_findings = [
             finding
             for finding in findings
@@ -560,6 +439,7 @@ class ReportWriterTool(BaseTool):
         metrics.tool_call_count = len(state.get("tool_results", []))
         metrics.llm_call_count = sum(
             [
+                bool(audit_plan and audit_plan.planner_source == "llm"),
                 any(item.analysis_source == "llm" for item in risk_analyses),
                 any(item.analysis_source == "llm" for item in review_results),
                 any(item.analysis_source == "llm" for item in fix_suggestions),
@@ -882,6 +762,29 @@ def _to_markdown(report: AuditReport, state: dict[str, Any]) -> str:
         lines.extend(["", "## Vulnerability Knowledge"])
         for item in report.vuln_knowledge:
             lines.append(f"- {item.title} (`{item.knowledge_id}`): {', '.join(item.matched_risk_types)}")
+    if report.audit_plan:
+        lines.extend(
+            [
+                "",
+                "## Audit Plan",
+                f"- Planner source: {report.audit_plan.planner_source}",
+                f"- Summary: {report.audit_plan.summary}",
+            ]
+        )
+        if report.audit_plan.fallback_reason:
+            lines.append(f"- Fallback reason: {report.audit_plan.fallback_reason}")
+        for stage in report.audit_plan.stages:
+            lines.extend(
+                [
+                    f"### {stage.stage.value}",
+                    f"- Priority: {stage.priority.value}",
+                    f"- Risk types: {', '.join(stage.risk_types) or 'N/A'}",
+                    f"- Target files: {', '.join(stage.target_files) or 'N/A'}",
+                    f"- Required capabilities: {', '.join(stage.required_capabilities) or 'N/A'}",
+                    f"- Evidence goals: {', '.join(stage.evidence_goals) or 'N/A'}",
+                    f"- Reason: {stage.reason}",
+                ]
+            )
     if report.tool_plan:
         lines.extend(
             [

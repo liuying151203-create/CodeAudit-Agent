@@ -10,12 +10,14 @@ router = APIRouter(prefix="/scan", tags=["scan"])
 
 class RepoScanRequest(BaseModel):
     repo_path: str
+    user_task: str | None = None
 
 
 class DiffScanRequest(BaseModel):
     repo_path: str | None = None
     diff_text: str | None = None
     diff_mode: str = "cached"
+    user_task: str | None = None
 
 
 def _response(state: dict):
@@ -48,7 +50,7 @@ def _response(state: dict):
 
 @router.post("/repo")
 def scan_repo(request: RepoScanRequest):
-    state = run_audit({"mode": "repo_scan", "repo_path": request.repo_path, "traces": [], "errors": []})
+    state = run_audit({"mode": "repo_scan", "repo_path": request.repo_path, "user_task": request.user_task, "traces": [], "errors": []})
     return _response(state)
 
 
@@ -60,6 +62,7 @@ def scan_diff(request: DiffScanRequest):
             "repo_path": request.repo_path,
             "diff_text": request.diff_text,
             "diff_mode": request.diff_mode,
+            "user_task": request.user_task,
             "traces": [],
             "errors": [],
         }

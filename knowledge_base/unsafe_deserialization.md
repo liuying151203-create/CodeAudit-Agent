@@ -1,3 +1,11 @@
+---
+id: unsafe_deserialization
+risk_type: Unsafe Deserialization
+languages: [Python, Java]
+frameworks: []
+keywords: [deserialization, 反序列化, pickle, yaml, ObjectInputStream]
+capabilities: [scan_deserialization, extract_call_chain]
+---
 # 不安全反序列化
 
 ## 适用场景

@@ -1,3 +1,11 @@
+---
+id: broken_access_control
+risk_type: Broken Access Control
+languages: [Python, Java]
+frameworks: [FastAPI, Flask, Django, Spring Boot, Spring MVC, Spring Security]
+keywords: [access control, authorization, 访问控制, 权限, authentication]
+capabilities: [inspect_access_control, extract_route_auth_context]
+---
 # 访问控制缺陷
 
 ## 适用场景

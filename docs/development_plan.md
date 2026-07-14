@@ -9,7 +9,7 @@
 - `repo_scan` 和 `diff_scan` 两种入口。
 - 本地仓库文件读取、Git diff 读取和 unified diff 解析。
 - Python 内置规则和 Secret 扫描。
-- 基础 ProjectProfile、漏洞知识检索和工具计划。
+- 支持 Python 与 Java 的 ProjectProfile、结构化漏洞知识检索和动态审计计划。
 - LangGraph 顺序工作流及无 LangGraph 环境下的 fallback。
 - LLM 风险分析、误报复核和修复建议。
 - LLM 未配置或调用失败时的模板降级。
@@ -18,9 +18,8 @@
 
 当前实现与目标设计的主要差距：
 
-- `AuditState` 仍围绕旧线性流程组织，缺少阶段队列、统一证据池和调用预算。
-- Project Reader 和漏洞知识检索仍是基础规则版本。
-- Planner 尚未按 capability 生成完整 `AuditPlan`。
+- `AuditState` 已具备结构化分区，但旧线性流程仍通过适配层运行，阶段队列尚未驱动图循环。
+- Project Reader、漏洞知识检索和 Planner 已完成，尚未接入 Stage Scheduler 外循环。
 - Tool Selector 和 Tool Executor 尚未形成统一安全网关。
 - Semgrep、Bandit 和 Gitleaks 适配器尚未完整执行并归一化结果。
 - LangGraph 尚未实现 Stage Scheduler 外循环和 Audit Reasoner 工具调用内循环。
@@ -59,6 +58,8 @@
 - Schema 单元测试覆盖正常、缺失字段和非法枚举场景。
 
 ## 4. 阶段二：项目理解与知识规划
+
+状态：已完成（2026-07-14）。
 
 ### 开发内容
 

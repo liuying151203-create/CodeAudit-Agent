@@ -2,6 +2,7 @@ import unittest
 
 from pydantic import ValidationError
 
+from app.agent.tools import _to_markdown
 from app.schemas import (
     AuditBudget,
     AuditDecision,
@@ -132,6 +133,32 @@ class SchemaTests(unittest.TestCase):
 
         self.assertEqual(restored.state_snapshot["request"]["repo_path"], "demo")
         self.assertEqual(restored.state_snapshot["runtime"]["budget"]["max_tool_rounds_per_stage"], 2)
+
+    def test_markdown_report_renders_audit_plan(self):
+        report = AuditReport(
+            report_id="report-1",
+            mode="repo_scan",
+            summary="No findings",
+            audit_plan=AuditPlan(
+                summary="Check injection risks",
+                stages=[
+                    AuditStagePlan(
+                        stage=AuditStageName.INJECTION,
+                        priority=Severity.HIGH,
+                        risk_types=["SQL Injection"],
+                        target_files=["app.py"],
+                        required_capabilities=["scan_sql_patterns"],
+                        evidence_goals=["Trace input to query execution"],
+                    )
+                ],
+            ),
+        )
+
+        markdown = _to_markdown(report, {})
+
+        self.assertIn("## Audit Plan", markdown)
+        self.assertIn("### injection", markdown)
+        self.assertIn("scan_sql_patterns", markdown)
 
 
 if __name__ == "__main__":

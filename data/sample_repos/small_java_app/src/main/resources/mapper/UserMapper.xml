@@ -1,0 +1,5 @@
+<mapper namespace="com.example.mapper.UserMapper">
+  <select id="findByName" resultType="map">
+    SELECT * FROM users WHERE name = '${name}'
+  </select>
+</mapper>

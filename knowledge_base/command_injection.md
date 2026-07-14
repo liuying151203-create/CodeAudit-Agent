@@ -1,3 +1,11 @@
+---
+id: command_injection
+risk_type: Command Execution
+languages: [Python, Java]
+frameworks: [FastAPI, Flask, Django, Spring Boot, Spring MVC]
+keywords: [command injection, 命令注入, shell, subprocess, Runtime.exec]
+capabilities: [scan_command_execution, extract_call_chain]
+---
 # 命令注入
 
 ## 适用场景

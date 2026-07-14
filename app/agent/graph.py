@@ -7,6 +7,7 @@ except Exception:  # pragma: no cover - dependency fallback
     StateGraph = None
 
 from app.agent.nodes import (
+    audit_planner_node,
     context_extract_node,
     diff_loader_node,
     finding_merger_node,
@@ -38,6 +39,7 @@ def build_graph():
     graph.add_node("diff_loader", diff_loader_node)
     graph.add_node("project_reader", project_reader_node)
     graph.add_node("vulnkb_retriever", vulnkb_retriever_node)
+    graph.add_node("audit_planner", audit_planner_node)
     graph.add_node("tool_selector", tool_selector_node)
     graph.add_node("tool_executor", tool_executor_node)
     graph.add_node("finding_merger", finding_merger_node)
@@ -48,10 +50,12 @@ def build_graph():
     graph.add_node("fix_suggest", fix_suggest_node)
     graph.add_node("report", report_node)
     graph.set_entry_point("router")
-    graph.add_conditional_edges("router", _route, {"repo_loader": "project_reader", "diff_loader": "diff_loader"})
+    graph.add_conditional_edges("router", _route, {"repo_loader": "repo_loader", "diff_loader": "diff_loader"})
+    graph.add_edge("repo_loader", "project_reader")
     graph.add_edge("diff_loader", "project_reader")
     graph.add_edge("project_reader", "vulnkb_retriever")
-    graph.add_edge("vulnkb_retriever", "tool_selector")
+    graph.add_edge("vulnkb_retriever", "audit_planner")
+    graph.add_edge("audit_planner", "tool_selector")
     graph.add_edge("tool_selector", "tool_executor")
     graph.add_edge("tool_executor", "finding_merger")
     graph.add_edge("finding_merger", "context_extract")
@@ -74,6 +78,7 @@ def run_audit(initial_state: AuditState) -> AuditState:
     for node in [
         project_reader_node,
         vulnkb_retriever_node,
+        audit_planner_node,
         tool_selector_node,
         tool_executor_node,
         finding_merger_node,

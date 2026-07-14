@@ -43,7 +43,7 @@ def parse_unified_diff(diff_text: str) -> list[dict[str, Any]]:
         current["content"] = "\n".join(content_lines)
         current["changed_lines"] = changed_lines
         files.append(current)
-    return [item for item in files if item.get("path", "").endswith(".py")]
+    return [item for item in files if item.get("path", "").lower().endswith((".java", ".py"))]
 
 
 def _parse_hunk_new_start(header: str) -> int:

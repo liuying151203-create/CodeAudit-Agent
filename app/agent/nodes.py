@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.agent.tools import (
+    AuditPlannerTool,
     ContextExtractorTool,
     FixSuggestTool,
     FindingMergerTool,
@@ -70,8 +71,25 @@ def vulnkb_retriever_node(state: dict) -> dict:
         "vulnkb_retriever_node",
         "VulnKBRetrieverTool",
         f"{len(state.get('project_profile', {}).risk_surfaces if state.get('project_profile') else [])} risk surfaces",
-        lambda: VulnKBRetrieverTool().run(state.get("project_profile"), state.get("mode", "")),
+        lambda: VulnKBRetrieverTool().run(state.get("project_profile"), state.get("user_task") or ""),
     )
+    return state
+
+
+def audit_planner_node(state: dict) -> dict:
+    state["audit_plan"] = trace_tool(
+        state,
+        "audit_planner_node",
+        "AuditPlannerTool",
+        f"{len(state.get('vuln_knowledge', []))} knowledge entries",
+        lambda: AuditPlannerTool().run(
+            state.get("project_profile"),
+            state.get("vuln_knowledge", []),
+            state.get("user_task") or "",
+            state.get("mode", "repo_scan"),
+        ),
+    )
+    state["stage_queue"] = list(state["audit_plan"].stages)
     return state
 
 
@@ -86,6 +104,7 @@ def tool_selector_node(state: dict) -> dict:
             state.get("vuln_knowledge", []),
             state.get("mode", "repo_scan"),
             state.get("scanned_files", []),
+            state.get("audit_plan"),
         ),
     )
     return state

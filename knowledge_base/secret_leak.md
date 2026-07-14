@@ -1,3 +1,11 @@
+---
+id: secret_leak
+risk_type: Secrets
+languages: [Python, Java]
+frameworks: []
+keywords: [secret, credential, API key, 密钥, 凭据]
+capabilities: [scan_secrets]
+---
 # Secrets 泄露
 
 ## 适用场景

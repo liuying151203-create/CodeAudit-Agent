@@ -45,6 +45,9 @@ if st.button("Run Audit Agent", type="primary"):
             st.json(report.project_profile.model_dump())
         st.subheader("Vulnerability Knowledge")
         st.write([item.title for item in report.vuln_knowledge])
+        st.subheader("Audit Plan")
+        if report.audit_plan:
+            st.json(report.audit_plan.model_dump())
         st.subheader("Tool Plan")
         if report.tool_plan:
             st.json(report.tool_plan.model_dump())

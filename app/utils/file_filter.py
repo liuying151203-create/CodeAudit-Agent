@@ -1,7 +1,7 @@
 from pathlib import Path
 
 IGNORED_DIRS = {".git", ".venv", "venv", "node_modules", "target", "dist", "__pycache__", ".mypy_cache"}
-SUPPORTED_EXTENSIONS = {".py"}
+SUPPORTED_EXTENSIONS = {".java", ".py"}
 
 
 def should_scan_file(path: Path) -> bool:
