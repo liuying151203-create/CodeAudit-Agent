@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import importlib.util
 import os
-import re
 import subprocess
 import tempfile
 import time
@@ -11,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from app.agent.prompt_context import DEFAULT_SANITIZER
 from app.scanners.builtin_rules import scan_files
 from app.schemas.execution import ToolObservation, ToolRunResult, ValidatedToolCall
 from app.schemas.finding import Finding
@@ -42,22 +42,25 @@ def execute_adapter(
     try:
         if tool.adapter == "builtin_secret":
             findings = [item for item in _builtin_findings(selected_files, tool.name) if item.category == "Secrets"]
+            findings = _remap_inline_diff_findings(findings, selected_files, mode)
             return _success(call, findings, started, f"{len(findings)} secret findings")
         if tool.adapter == "builtin_rules":
             findings = [item for item in _builtin_findings(selected_files, tool.name) if item.category != "Secrets"]
+            findings = _remap_inline_diff_findings(findings, selected_files, mode)
             return _success(call, findings, started, f"{len(findings)} builtin rule findings")
         if tool.adapter == "context_extractor":
             observations = []
             for item in selected_files:
                 lines = str(item.get("content") or "").splitlines()[:80]
+                line_map = item.get("line_map") or {}
                 observations.append(
                     ToolObservation(
                         observation_type="file_context",
-                        content=_redact_context("\n".join(lines)),
+                        content=DEFAULT_SANITIZER.sanitize_code("\n".join(lines)),
                         file_path=str(item.get("path") or ""),
-                        start_line=1 if lines else None,
-                        end_line=len(lines) or None,
-                        metadata={"changed_line": bool(item.get("changed_lines"))},
+                        start_line=int(line_map.get("1", 1)) if lines else None,
+                        end_line=int(line_map.get(str(len(lines)), len(lines))) if lines else None,
+                        metadata={"changed_line": bool(item.get("changed_lines")), "line_map": line_map},
                     )
                 )
             result = _success(call, [], started, f"{len(observations)} context observations")
@@ -336,8 +339,25 @@ def _relative_path(value: Any, root: Path) -> str:
 def _filter_diff_findings(findings: list[Finding], files: list[dict[str, Any]], mode: str) -> list[Finding]:
     if mode != "diff_scan":
         return findings
-    changed = {str(item.get("path")): set(item.get("changed_lines") or []) for item in files}
+    changed = {
+        str(item.get("path")): set(item.get("changed_original_lines") or item.get("changed_lines") or [])
+        for item in files
+    }
     return [item for item in findings if not changed.get(item.file_path) or item.line_start in changed[item.file_path]]
+
+
+def _remap_inline_diff_findings(findings: list[Finding], files: list[dict[str, Any]], mode: str) -> list[Finding]:
+    if mode != "diff_scan":
+        return findings
+    maps = {str(item.get("path")): item.get("line_map") or {} for item in files}
+    remapped: list[Finding] = []
+    for finding in findings:
+        line_map = maps.get(finding.file_path, {})
+        start = int(line_map.get(str(finding.line_start), finding.line_start))
+        end = int(line_map.get(str(finding.line_end), start))
+        change_scope = "changed_line_finding" if line_map else finding.change_scope
+        remapped.append(finding.model_copy(update={"line_start": start, "line_end": end, "change_scope": change_scope}))
+    return remapped
 
 
 def _filter_stage_findings(findings: list[Finding], stage: Any) -> list[Finding]:
@@ -440,11 +460,3 @@ def _terminate_process_tree(process: subprocess.Popen[Any]) -> None:
     except subprocess.TimeoutExpired:
         process.kill()
         process.wait()
-
-
-def _redact_context(text: str) -> str:
-    return re.sub(
-        r"(?i)(\b(?:api[_-]?key|token|password|passwd|private[_-]?key|secret)\b\s*[:=]\s*)(['\"]?)[^\s,'\"]+\2",
-        r"\1<redacted>",
-        text,
-    )

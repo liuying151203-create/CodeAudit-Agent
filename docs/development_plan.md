@@ -12,17 +12,16 @@
 - 支持 Python 与 Java 的 ProjectProfile、结构化漏洞知识检索和动态审计计划。
 - 统一只读工具网关，以及 Semgrep、Bandit、Gitleaks 外部工具适配器。
 - LangGraph 阶段调度外循环、工具调用内循环及无 LangGraph 环境下的 fallback。
-- LLM 风险分析、误报复核和修复建议。
+- Evidence 上下文提取、Secret 脱敏和 Finding 来源追踪。
+- LLM 批量风险分析、误报复核和修复建议。
 - LLM 未配置或调用失败时的模板降级。
-- Markdown、JSON 报告和基础 Agent trace。
+- Markdown、JSON、SARIF 报告和基础 Agent trace。
 - FastAPI 接口和 Streamlit 演示页面。
 
 当前实现与目标设计的主要差距：
 
-- Stage Scheduler 与 Audit Reasoner 双层循环已完成，后续需要统一 Finding、Evidence 和 ReviewResult 生命周期。
-- Finding、Evidence、ReviewResult 和 fallback 的生命周期尚未完全统一。
 - Streamlit 只能在审计完成后集中展示结果，尚未消费 LangGraph 事件流。
-- SARIF、GitHub Action、PR Comment 和 MCP Adapter 尚未完成集成。
+- GitHub Action、PR Comment 和 MCP Adapter 尚未完成集成。
 
 ## 2. 实施原则
 
@@ -116,6 +115,8 @@
 
 ## 7. 阶段五：Finding 质量闭环
 
+状态：已完成（2026-07-17）。
+
 ### 开发内容
 
 - 实现 Evidence Builder 的函数、类、imports、diff 行号和局部调用关系提取。
@@ -155,7 +156,7 @@
 
 ### 开发内容
 
-- 输出符合规范的 SARIF 结果。
+- 校验现有 SARIF 输出并接入 GitHub Code Scanning。
 - 增加 GitHub Action，按事件选择 repo_scan 或 diff_scan。
 - 生成并回写 PR Comment 摘要。
 - 完成 MCP Adapter 的工具发现、Schema 映射和安全调用。

@@ -54,6 +54,8 @@ class FindingSection(TypedDict, total=False):
     risk_analyses: list[RiskAnalysis]
     review_results: list[ReviewResult]
     confirmed_findings: list[Finding]
+    dismissed_findings: list[Finding]
+    needs_review_findings: list[Finding]
     fix_suggestions: list[FixSuggestion]
 
 
@@ -74,7 +76,7 @@ class AuditState(TypedDict, total=False):
     findings: FindingSection
     runtime: RuntimeSection
 
-    # Compatibility fields used by the current linear workflow.
+    # Flat mirrors keep node access concise while sync_audit_state maintains the structured sections.
     mode: str
     repo_path: str | None
     diff_text: str | None
@@ -104,6 +106,8 @@ class AuditState(TypedDict, total=False):
     risk_analyses: list[RiskAnalysis]
     review_results: list[ReviewResult]
     confirmed_findings: list[Finding]
+    dismissed_findings: list[Finding]
+    needs_review_findings: list[Finding]
     fix_suggestions: list[FixSuggestion]
     budget: AuditBudget
     metrics: AuditMetrics
@@ -171,6 +175,8 @@ def normalize_audit_state(initial_state: AuditState | dict[str, Any]) -> AuditSt
             "risk_analyses": "risk_analyses",
             "review_results": "review_results",
             "confirmed_findings": "confirmed_findings",
+            "dismissed_findings": "dismissed_findings",
+            "needs_review_findings": "needs_review_findings",
             "fix_suggestions": "fix_suggestions",
         },
     )
@@ -205,6 +211,8 @@ def normalize_audit_state(initial_state: AuditState | dict[str, Any]) -> AuditSt
     state.setdefault("risk_analyses", [])
     state.setdefault("review_results", [])
     state.setdefault("confirmed_findings", [])
+    state.setdefault("dismissed_findings", [])
+    state.setdefault("needs_review_findings", [])
     state.setdefault("fix_suggestions", [])
     state.setdefault("fallbacks", [])
     state.setdefault("traces", [])
@@ -231,6 +239,8 @@ def normalize_audit_state(initial_state: AuditState | dict[str, Any]) -> AuditSt
     state["risk_analyses"] = _coerce_model_list(state.get("risk_analyses", []), RiskAnalysis)
     state["review_results"] = _coerce_model_list(state.get("review_results", []), ReviewResult)
     state["confirmed_findings"] = _coerce_model_list(state.get("confirmed_findings", []), Finding)
+    state["dismissed_findings"] = _coerce_model_list(state.get("dismissed_findings", []), Finding)
+    state["needs_review_findings"] = _coerce_model_list(state.get("needs_review_findings", []), Finding)
     state["fix_suggestions"] = _coerce_model_list(state.get("fix_suggestions", []), FixSuggestion)
     state["fallbacks"] = _coerce_model_list(state.get("fallbacks", []), FallbackRecord)
     state["traces"] = _coerce_model_list(state.get("traces", []), AgentTrace)
@@ -301,6 +311,8 @@ def sync_audit_state(state: AuditState) -> AuditState:
             "risk_analyses": state.get("risk_analyses", []),
             "review_results": state.get("review_results", []),
             "confirmed_findings": state.get("confirmed_findings", []),
+            "dismissed_findings": state.get("dismissed_findings", []),
+            "needs_review_findings": state.get("needs_review_findings", []),
             "fix_suggestions": state.get("fix_suggestions", []),
         }
     )

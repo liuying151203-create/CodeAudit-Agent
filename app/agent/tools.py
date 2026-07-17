@@ -24,9 +24,12 @@ from app.diff.diff_parser import parse_unified_diff
 from app.diff.git_diff_loader import load_git_diff
 from app.knowledge.retriever import rerank_knowledge, retrieve_vulnerability_knowledge
 from app.project.reader import build_project_profile
+from app.reporting import build_sarif, render_markdown
 from app.agent.reasoner import build_reasoner_payload, fallback_reasoner_decision, parse_reasoner_decision
+from app.agent.prompt_context import DEFAULT_SANITIZER, redact_sensitive_text
 from app.security_tools.gateway import execute_tool_plan, select_tool_plan
-from app.schemas.finding import Finding, FixSuggestion, ReviewResult, RiskAnalysis
+from app.schemas.enums import FindingStatus
+from app.schemas.finding import Finding, FindingAssessmentBatch, FindingProvenance, FixSuggestion, ReviewResult, RiskAnalysis
 from app.schemas.evidence import Evidence
 from app.schemas.planning import AuditPlan, AuditStagePlan
 from app.schemas.project import ProjectProfile, ToolExecutionResult, ToolPlan, VulnKnowledge
@@ -220,109 +223,48 @@ class FindingMergerTool(BaseTool):
 
     def run(self, tool_results: list[ToolExecutionResult], additional_findings: list[Finding] | None = None) -> list[Finding]:
         merged: dict[tuple[str, str, int, int], Finding] = {}
-        severity_rank = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
         for result in tool_results:
             for finding in result.findings:
-                key = (finding.category.lower(), finding.file_path, finding.line_start, finding.line_end)
-                if key not in merged:
-                    merged[key] = finding
-                    continue
-                existing = merged[key]
-                sources = list(dict.fromkeys([*existing.sources, *finding.sources]))
-                source_rule_ids = list(dict.fromkeys([*existing.source_rule_ids, *finding.source_rule_ids]))
-                severity = finding.severity if severity_rank[finding.severity] > severity_rank[existing.severity] else existing.severity
-                merged[key] = existing.model_copy(
-                    update={
-                        "severity": severity,
-                        "confidence": max(existing.confidence, finding.confidence),
-                        "sources": sources,
-                        "source_rule_ids": source_rule_ids,
-                    }
-                )
+                _merge_finding(merged, finding, result.tool_name, result.call_id)
         for finding in additional_findings or []:
-            key = (finding.category.lower(), finding.file_path, finding.line_start, finding.line_end)
-            if key not in merged:
-                merged[key] = finding
+            key = _finding_key(finding)
+            if key in merged and _source_type(finding, finding.source) not in {"llm", "mcp"}:
+                existing = merged[key]
+                merged[key] = existing.model_copy(
+                    update={"evidence_ids": list(dict.fromkeys([*existing.evidence_ids, *finding.evidence_ids]))}
+                )
                 continue
-            existing = merged[key]
-            sources = list(dict.fromkeys([*existing.sources, *finding.sources]))
-            source_rule_ids = list(dict.fromkeys([*existing.source_rule_ids, *finding.source_rule_ids]))
-            severity = finding.severity if severity_rank[finding.severity] > severity_rank[existing.severity] else existing.severity
-            merged[key] = existing.model_copy(
-                update={
-                    "severity": severity,
-                    "confidence": max(existing.confidence, finding.confidence),
-                    "sources": sources,
-                    "source_rule_ids": source_rule_ids,
-                    "evidence_ids": list(dict.fromkeys([*existing.evidence_ids, *finding.evidence_ids])),
-                }
-            )
+            _merge_finding(merged, finding, finding.source, None)
         return list(merged.values())
 
 
-class RiskAnalyzeTool(BaseTool):
-    name: str = "risk_analyzer"
-    description: str = "Analyze scanner candidates. Uses rule template when no LLM API is configured."
+class FindingAssessorTool(BaseTool):
+    name: str = "finding_assessor"
+    description: str = "Batch risk analysis and false-positive review in one evidence-bound decision."
 
-    def run(self, findings: list[Finding], evidences: list[Any] | None = None) -> list[RiskAnalysis]:
+    def run(self, findings: list[Finding], evidences: list[Evidence] | None = None) -> FindingAssessmentBatch:
+        evidence_items = evidences or []
         fallback_reason = None
         if _llm_enabled():
-            analyses, fallback_reason = _llm_batch_risk_analysis(findings, evidences or [])
-            if analyses is not None:
-                return analyses
+            assessed, fallback_reason = _llm_batch_finding_assessment(findings, evidence_items)
+            if assessed is not None:
+                return assessed
         elif findings:
             fallback_reason = "LLM API key is not configured."
-        return [
-            RiskAnalysis(
-                finding_id=f.finding_id,
-                risk_type=f.category,
-                risk_reason=f.message,
-                exploit_scenario=_scenario_for(f),
-                confidence=0.86 if f.severity == "high" else 0.72,
-                severity=f.severity,
-                analysis_source="template",
-                fallback_reason=fallback_reason,
-            )
-            for f in findings
-        ]
-
-
-class FalsePositiveReviewTool(BaseTool):
-    name: str = "false_positive_reviewer"
-    description: str = "Review likely false positives using scanner evidence."
-
-    def run(self, findings: list[Finding], evidences: list[Any] | None = None) -> list[ReviewResult]:
-        fallback_reason = None
-        if _llm_enabled():
-            reviews, fallback_reason = _llm_batch_false_positive_review(findings, evidences or [])
-            if reviews is not None:
-                return reviews
-        elif findings:
-            fallback_reason = "LLM API key is not configured."
-        results: list[ReviewResult] = []
-        for finding in findings:
-            evidence = finding.evidence_text.lower()
-            is_fp = finding.category == "Secrets" and any(marker in evidence for marker in ["example", "dummy", "placeholder"])
-            results.append(
-                ReviewResult(
-                    finding_id=finding.finding_id,
-                    is_false_positive=is_fp,
-                    reason="Looks like sample placeholder data." if is_fp else "Static evidence matches a risky pattern.",
-                    final_severity="low" if is_fp else finding.severity,
-                    analysis_source="template",
-                    fallback_reason=fallback_reason,
-                )
-            )
-        return results
+        return _template_finding_assessment(findings, evidence_items, fallback_reason)
 
 
 class FixSuggestTool(BaseTool):
     name: str = "fix_advisor"
     description: str = "Generate remediation guidance and patch hints."
 
-    def run(self, findings: list[Finding], reviews: list[ReviewResult], evidences: list[Any] | None = None) -> list[FixSuggestion]:
-        review_map = {review.finding_id: review for review in reviews}
-        active_findings = [finding for finding in findings if not (review_map.get(finding.finding_id) and review_map[finding.finding_id].is_false_positive)]
+    def run(
+        self,
+        findings: list[Finding],
+        evidences: list[Evidence] | None = None,
+        knowledge: list[VulnKnowledge] | None = None,
+    ) -> list[FixSuggestion]:
+        active_findings = [finding for finding in findings if finding.status == FindingStatus.CONFIRMED]
         fallback_reason = None
         if _llm_enabled():
             llm_suggestions, fallback_reason = _llm_batch_fix_suggestions(active_findings, evidences or [])
@@ -332,7 +274,7 @@ class FixSuggestTool(BaseTool):
             fallback_reason = "LLM API key is not configured."
         suggestions: list[FixSuggestion] = []
         for finding in active_findings:
-            suggestion, safe_code, hint = _fix_for(finding)
+            suggestion, safe_code, hint = _fix_for(finding, knowledge or [])
             suggestions.append(
                 FixSuggestion(
                     finding_id=finding.finding_id,
@@ -341,6 +283,7 @@ class FixSuggestTool(BaseTool):
                     patch_hint=hint,
                     analysis_source="template",
                     fallback_reason=fallback_reason,
+                    evidence_ids=finding.evidence_ids,
                 )
             )
         return suggestions
@@ -354,11 +297,23 @@ class ReportWriterTool(BaseTool):
         report_id = str(uuid.uuid4())[:8]
         report_dir = Path(os.getenv("CODEAUDIT_REPORT_DIR", "data/reports"))
         report_dir.mkdir(parents=True, exist_ok=True)
-        findings: list[Finding] = state.get("candidate_findings", [])
+        all_findings: list[Finding] = state.get("candidate_findings", [])
         risk_analyses: list[RiskAnalysis] = state.get("risk_analyses", [])
         review_results: list[ReviewResult] = state.get("review_results", [])
         fix_suggestions: list[FixSuggestion] = state.get("fix_suggestions", [])
-        stats = Counter(f.severity for f in findings)
+        evidence_ids = {item.evidence_id for item in state.get("evidences", [])}
+        confirmed_findings = [item for item in all_findings if item.status == FindingStatus.CONFIRMED]
+        dismissed_findings = [item for item in all_findings if item.status == FindingStatus.DISMISSED]
+        needs_review_findings = [item for item in all_findings if item.status == FindingStatus.NEEDS_REVIEW]
+        active_findings = [
+            item
+            for item in [*confirmed_findings, *needs_review_findings]
+            if item.evidence_ids and any(value in evidence_ids for value in item.evidence_ids)
+        ]
+        active_findings = [_mark_reported(item) for item in active_findings]
+        dismissed_findings = [_mark_reported(item) for item in dismissed_findings]
+        needs_review_findings = [_mark_reported(item) for item in needs_review_findings]
+        stats = Counter(f.severity for f in active_findings)
         recommendations = [item.suggestion for item in fix_suggestions]
         analysis_items = [*risk_analyses, *review_results, *fix_suggestions]
         analysis_summary = Counter(item.analysis_source for item in analysis_items if getattr(item, "analysis_source", None))
@@ -388,22 +343,16 @@ class ReportWriterTool(BaseTool):
                     strategy="builtin_tool" if tool_plan and reason in tool_plan.fallback_reasons else "template",
                 )
             )
-        confirmed_findings = [
-            finding
-            for finding in findings
-            if not any(review.finding_id == finding.finding_id and review.is_false_positive for review in review_results)
-        ]
         metrics = state.get("metrics") or AuditMetrics()
-        metrics.detected_findings = len(findings)
+        metrics.detected_findings = len(all_findings)
         metrics.confirmed_findings = len(confirmed_findings)
-        metrics.dismissed_findings = len(findings) - len(confirmed_findings)
+        metrics.dismissed_findings = len(dismissed_findings)
         metrics.tool_call_count = len(state.get("validated_tool_calls", []))
         metrics.llm_call_count = sum(
             [
                 bool(audit_plan and audit_plan.planner_source == "llm"),
                 sum(1 for trace in state.get("traces", []) if trace.node_name == "audit_reasoner_node" and trace.llm_used),
-                any(item.analysis_source == "llm" for item in risk_analyses),
-                any(item.analysis_source == "llm" for item in review_results),
+                any(trace.node_name == "finding_assessor_node" and trace.llm_used for trace in state.get("traces", [])),
                 any(item.analysis_source == "llm" for item in fix_suggestions),
             ]
         )
@@ -416,9 +365,13 @@ class ReportWriterTool(BaseTool):
         from app.agent.state import serialize_audit_state, sync_audit_state
 
         sync_audit_state(state)
-        summary = f"Scanned {len(state.get('scanned_files', []))} files and found {len(findings)} candidate risks."
+        summary = (
+            f"Scanned {len(state.get('scanned_files', []))} files: {len(confirmed_findings)} confirmed, "
+            f"{len(needs_review_findings)} needs review, {len(dismissed_findings)} dismissed."
+        )
         markdown_path = report_dir / f"{report_id}.md"
         json_path = report_dir / f"{report_id}.json"
+        sarif_path = report_dir / f"{report_id}.sarif"
         report = AuditReport(
             report_id=report_id,
             mode=state.get("mode", "repo_scan"),
@@ -433,7 +386,9 @@ class ReportWriterTool(BaseTool):
             tool_results=state.get("tool_results", []),
             audit_stage_results=state.get("audit_stage_results", []),
             evidences=state.get("evidences", []),
-            findings=findings,
+            findings=active_findings,
+            dismissed_findings=dismissed_findings,
+            needs_review_findings=needs_review_findings,
             risk_analyses=risk_analyses,
             review_results=review_results,
             fix_suggestions=fix_suggestions,
@@ -444,13 +399,183 @@ class ReportWriterTool(BaseTool):
             metrics=metrics,
             recommendations=recommendations,
             traces=state.get("traces", []),
-            state_snapshot=serialize_audit_state(state),
+            state_snapshot=DEFAULT_SANITIZER.sanitize_value(serialize_audit_state(state)),
             markdown_path=str(markdown_path),
             json_path=str(json_path),
+            sarif_path=str(sarif_path),
         )
-        markdown_path.write_text(_to_markdown(report, state), encoding="utf-8")
+        report = AuditReport.model_validate(DEFAULT_SANITIZER.sanitize_value(report.model_dump(mode="json")))
+        markdown_path.write_text(render_markdown(report), encoding="utf-8")
         json_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+        sarif_path.write_text(json.dumps(build_sarif(report), ensure_ascii=False, indent=2), encoding="utf-8")
         return report
+
+
+def _mark_reported(finding: Finding) -> Finding:
+    return finding.model_copy(
+        update={"status_history": list(dict.fromkeys([*finding.status_history, FindingStatus.REPORTED]))}
+    )
+
+
+def _merge_finding(
+    merged: dict[tuple[str, str, int, int], Finding],
+    finding: Finding,
+    source_name: str,
+    call_id: str | None,
+) -> None:
+    severity_rank = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+    key = _finding_key(finding)
+    source_type = _source_type(finding, source_name)
+    provenance = FindingProvenance(
+        source_type=source_type,
+        source_name=source_name,
+        source_rule_id=finding.rule_id,
+        source_finding_id=finding.finding_id,
+        tool_call_id=call_id,
+        evidence_ids=finding.evidence_ids,
+    )
+    history = list(dict.fromkeys([*finding.status_history, FindingStatus.MERGED]))
+    sanitized = finding.model_copy(
+        update={
+            "message": redact_sensitive_text(finding.message),
+            "evidence_text": redact_sensitive_text(finding.evidence_text),
+            "status": FindingStatus.MERGED,
+            "status_history": history,
+            "provenance": _dedupe_provenance([*finding.provenance, provenance]),
+        }
+    )
+    if key not in merged:
+        merged[key] = sanitized
+        return
+    existing = merged[key]
+    severity = sanitized.severity if severity_rank[sanitized.severity] > severity_rank[existing.severity] else existing.severity
+    merged[key] = existing.model_copy(
+        update={
+            "line_end": max(existing.line_end, sanitized.line_end),
+            "severity": severity,
+            "confidence": max(existing.confidence, sanitized.confidence),
+            "sources": list(dict.fromkeys([*existing.sources, *sanitized.sources, source_name])),
+            "source_rule_ids": list(dict.fromkeys([*existing.source_rule_ids, *sanitized.source_rule_ids])),
+            "evidence_ids": list(dict.fromkeys([*existing.evidence_ids, *sanitized.evidence_ids])),
+            "provenance": _dedupe_provenance([*existing.provenance, *sanitized.provenance]),
+            "status_history": list(dict.fromkeys([*existing.status_history, *sanitized.status_history])),
+            "change_scope": (
+                "changed_line_finding"
+                if "changed_line_finding" in {existing.change_scope, sanitized.change_scope}
+                else existing.change_scope
+            ),
+        }
+    )
+
+
+def _source_type(finding: Finding, source_name: str) -> str:
+    value = f"{source_name} {finding.source} {finding.analysis_source}".lower()
+    if "mcp" in value:
+        return "mcp"
+    if "llm" in value or "agent" in value:
+        return "llm"
+    if source_name in {"semgrep", "bandit", "gitleaks"}:
+        return "external_tool"
+    return "builtin_tool"
+
+
+def _finding_key(finding: Finding) -> tuple[str, str, int, int]:
+    return ((finding.risk_type or finding.category).lower(), finding.file_path.lower(), finding.line_start, finding.line_start)
+
+
+def _dedupe_provenance(items: list[FindingProvenance]) -> list[FindingProvenance]:
+    result: list[FindingProvenance] = []
+    seen: set[str] = set()
+    for item in items:
+        key = item.model_dump_json()
+        if key not in seen:
+            seen.add(key)
+            result.append(item)
+    return result
+
+
+def _template_finding_assessment(
+    findings: list[Finding], evidences: list[Evidence], fallback_reason: str | None
+) -> FindingAssessmentBatch:
+    evidence_map = {item.evidence_id: item for item in evidences}
+    assessed: list[Finding] = []
+    analyses: list[RiskAnalysis] = []
+    reviews: list[ReviewResult] = []
+    for finding in findings:
+        evidence_ids = [value for value in finding.evidence_ids if value in evidence_map]
+        evidence_text = " ".join(
+            f"{evidence_map[value].code_snippet} {evidence_map[value].code_context}" for value in evidence_ids
+        ).lower()
+        normalized_path = finding.file_path.lower().replace("\\", "/")
+        test_fixture = normalized_path.startswith("tests/") or "/tests/" in f"/{normalized_path}" or Path(normalized_path).name.startswith("test_")
+        placeholder = finding.category == "Secrets" and (
+            test_fixture
+            or any(marker in evidence_text for marker in ("example", "dummy", "placeholder", "fake-secret", "test-secret"))
+        )
+        if placeholder:
+            status = FindingStatus.DISMISSED
+            reason = "Evidence indicates example or placeholder secret data."
+        elif not evidence_ids or finding.confidence < 0.55:
+            status = FindingStatus.NEEDS_REVIEW
+            reason = "Available evidence is insufficient for deterministic confirmation."
+        else:
+            status = FindingStatus.CONFIRMED
+            reason = "The finding is supported by a concrete source location and scanner evidence."
+        final_severity = "low" if status == FindingStatus.DISMISSED else finding.severity
+        assessed.append(_with_finding_status(finding, status, "template", fallback_reason))
+        analyses.append(
+            RiskAnalysis(
+                finding_id=finding.finding_id,
+                risk_type=finding.risk_type or finding.category,
+                risk_reason=finding.message,
+                exploit_scenario=_scenario_for(finding),
+                confidence=finding.confidence,
+                severity=final_severity,
+                analysis_source="template",
+                fallback_reason=fallback_reason,
+                evidence_ids=evidence_ids,
+            )
+        )
+        reviews.append(
+            ReviewResult(
+                finding_id=finding.finding_id,
+                is_false_positive=status == FindingStatus.DISMISSED,
+                reason=reason,
+                final_severity=final_severity,
+                status=status,
+                analysis_source="template",
+                fallback_reason=fallback_reason,
+                evidence_ids=evidence_ids,
+            )
+        )
+    return FindingAssessmentBatch(
+        findings=assessed,
+        risk_analyses=analyses,
+        review_results=reviews,
+        analysis_source="template",
+        fallback_reason=fallback_reason,
+    )
+
+
+def _with_finding_status(
+    finding: Finding,
+    status: FindingStatus,
+    analysis_source: str,
+    fallback_reason: str | None = None,
+) -> Finding:
+    return finding.model_copy(
+        update={
+            "status": status,
+            "status_history": list(dict.fromkeys([*finding.status_history, status])),
+            "analysis_source": analysis_source,
+            "fallback_reason": fallback_reason,
+        }
+    )
+
+
+def _valid_severity(value: Any, default: str) -> str:
+    candidate = str(value or default).lower()
+    return candidate if candidate in {"info", "low", "medium", "high", "critical"} else default
 
 
 def _scenario_for(finding: Finding) -> str:
@@ -464,18 +589,32 @@ def _scenario_for(finding: Finding) -> str:
     return scenarios.get(finding.category, "The flagged code may become exploitable depending on input control.")
 
 
-def _fix_for(finding: Finding) -> tuple[str, str, str]:
+def _fix_for(finding: Finding, knowledge: list[VulnKnowledge] | None = None) -> tuple[str, str, str]:
+    knowledge_guidance = next(
+        (
+            item.fix_guidance[0]
+            for item in knowledge or []
+            if item.fix_guidance and (item.risk_type or "").lower() == (finding.risk_type or finding.category).lower()
+        ),
+        None,
+    )
     if finding.category == "Secrets":
-        return ("Move secrets to environment variables or a secret manager.", "password = os.getenv('APP_PASSWORD')", "Rotate the exposed value and replace literals with env lookups.")
-    if finding.rule_id == "PY_DANGEROUS_FUNCTION":
-        return ("Avoid eval/exec and unsafe loaders; use typed parsers or safe_load.", "data = yaml.safe_load(raw_text)", "Replace dynamic execution/deserialization with a constrained parser.")
+        return (knowledge_guidance or "Move secrets to environment variables or a secret manager.", "password = os.getenv('APP_PASSWORD')", "Rotate the exposed value and replace literals with env lookups.")
+    if finding.category == "Unsafe Deserialization":
+        return (knowledge_guidance or "Avoid native object deserialization and unsafe loaders; use a typed parser or safe_load.", "data = yaml.safe_load(raw_text)", "Replace unsafe deserialization with a constrained data format and schema validation.")
     if finding.category == "Command Execution":
-        return ("Avoid shell=True and pass arguments as a list.", "subprocess.run(['ls', target], check=True)", "Validate input and call subprocess without a shell.")
+        if finding.rule_id == "PY_DANGEROUS_FUNCTION":
+            return (
+                knowledge_guidance or "Replace eval/exec with an allowlisted operation or a typed parser.",
+                "handlers[action](validated_payload)",
+                "Map validated action names to explicit functions instead of evaluating input.",
+            )
+        return (knowledge_guidance or "Avoid shell=True and pass arguments as a list.", "subprocess.run(['ls', target], check=True)", "Validate input and call subprocess without a shell.")
     if finding.category == "SQL Injection":
-        return ("Use parameterized queries.", "cursor.execute('SELECT * FROM users WHERE name = ?', (name,))", "Replace string-built SQL with bound parameters.")
+        return (knowledge_guidance or "Use parameterized queries.", "cursor.execute('SELECT * FROM users WHERE name = ?', (name,))", "Replace string-built SQL with bound parameters.")
     if finding.category == "Path Traversal":
-        return ("Normalize paths and enforce an allowed base directory.", "safe = (base / user_path).resolve(); assert safe.is_relative_to(base)", "Resolve and verify paths before reading files.")
-    return ("Review the risky pattern and apply least-privilege validation.", "", "Refactor the flagged line.")
+        return (knowledge_guidance or "Normalize paths and enforce an allowed base directory.", "safe = (base / user_path).resolve(); assert safe.is_relative_to(base)", "Resolve and verify paths before reading files.")
+    return (knowledge_guidance or "Review the risky pattern and apply least-privilege validation.", "", "Refactor the flagged line.")
 
 
 def _llm_enabled() -> bool:
@@ -483,33 +622,49 @@ def _llm_enabled() -> bool:
 
 
 def _findings_with_evidence(findings: list[Finding], evidences: list[Any]) -> list[dict[str, Any]]:
-    evidence_map = {item.finding_id: item for item in evidences if hasattr(item, "finding_id")}
+    evidence_map = {item.evidence_id: item for item in evidences if hasattr(item, "evidence_id")}
     payload: list[dict[str, Any]] = []
     for finding in findings:
-        item = finding.model_dump()
-        evidence = evidence_map.get(finding.finding_id)
-        if evidence:
-            item["evidence"] = evidence.model_dump() if hasattr(evidence, "model_dump") else dict(evidence)
-        payload.append(item)
+        item = {
+            "finding_id": finding.finding_id,
+            "rule_id": finding.rule_id,
+            "risk_type": finding.risk_type or finding.category,
+            "severity": finding.severity,
+            "confidence": finding.confidence,
+            "file_path": finding.file_path,
+            "line_start": finding.line_start,
+            "line_end": finding.line_end,
+            "message": finding.message,
+            "sources": finding.sources,
+            "evidence_ids": finding.evidence_ids,
+            "evidence": [
+                evidence_map[evidence_id].model_dump(mode="json")
+                for evidence_id in finding.evidence_ids
+                if evidence_id in evidence_map
+            ],
+        }
+        payload.append(DEFAULT_SANITIZER.sanitize_value(item))
     return payload
 
 
-def _llm_batch_risk_analysis(findings: list[Finding], evidences: list[Any]) -> tuple[list[RiskAnalysis] | None, str | None]:
+def _llm_batch_finding_assessment(findings: list[Finding], evidences: list[Evidence]) -> tuple[FindingAssessmentBatch | None, str | None]:
     if not findings:
-        return [], None
-    data, fallback_reason = _call_llm_json(
-        "You are a code security auditor. Return only compact JSON.",
+        return FindingAssessmentBatch(analysis_source="llm"), None
+    data, fallback_reason, token_usage = _call_llm_json_with_usage(
+        "You are an evidence-driven code security assessor. Use only supplied evidence and return compact JSON.",
         {
-            "task": "Analyze these static-scan findings. Do not invent unrelated issues. Return one result per finding_id.",
+            "task": "For every finding, analyze risk and review false-positive likelihood in one decision. Never invent evidence or omit a finding_id.",
             "schema": {
-                "risk_analyses": [
+                "assessments": [
                     {
                         "finding_id": "string",
                         "risk_type": "string",
                         "risk_reason": "string",
                         "exploit_scenario": "string",
                         "confidence": "number from 0 to 1",
-                        "severity": "low|medium|high|critical",
+                        "severity": "info|low|medium|high|critical",
+                        "status": "confirmed|dismissed|needs_review",
+                        "review_reason": "string",
                     }
                 ]
             },
@@ -518,21 +673,33 @@ def _llm_batch_risk_analysis(findings: list[Finding], evidences: list[Any]) -> t
     )
     if not data:
         return None, fallback_reason
-    items = data.get("risk_analyses")
+    items = data.get("assessments")
     if not isinstance(items, list):
-        return None, "LLM response missing risk_analyses list."
+        return None, "LLM response missing assessments list."
     finding_map = {finding.finding_id: finding for finding in findings}
+    evidence_map = {item.evidence_id: item for item in evidences}
     seen: set[str] = set()
+    assessed_findings: list[Finding] = []
     analyses: list[RiskAnalysis] = []
+    reviews: list[ReviewResult] = []
     try:
         for item in items:
             if not isinstance(item, dict):
-                return None, "LLM risk analysis item is not an object."
+                return None, "LLM assessment item is not an object."
             finding_id = str(item.get("finding_id") or "")
             finding = finding_map.get(finding_id)
             if not finding:
                 continue
             seen.add(finding_id)
+            evidence_ids = [value for value in finding.evidence_ids if value in evidence_map]
+            status_value = str(item.get("status") or "needs_review").lower()
+            if status_value not in {"confirmed", "dismissed", "needs_review"}:
+                status_value = "needs_review"
+            if not evidence_ids and status_value == "confirmed":
+                status_value = "needs_review"
+            status = FindingStatus(status_value)
+            severity = _valid_severity(item.get("severity"), finding.severity)
+            assessed_findings.append(_with_finding_status(finding, status, "llm"))
             analyses.append(
                 RiskAnalysis(
                     finding_id=finding_id,
@@ -540,67 +707,37 @@ def _llm_batch_risk_analysis(findings: list[Finding], evidences: list[Any]) -> t
                     risk_reason=str(item.get("risk_reason") or finding.message),
                     exploit_scenario=str(item.get("exploit_scenario") or _scenario_for(finding)),
                     confidence=max(0.0, min(1.0, float(item.get("confidence", 0.75)))),
-                    severity=str(item.get("severity") or finding.severity),
+                    severity=severity,
                     analysis_source="llm",
+                    evidence_ids=evidence_ids,
+                )
+            )
+            reviews.append(
+                ReviewResult(
+                    finding_id=finding_id,
+                    is_false_positive=status == FindingStatus.DISMISSED,
+                    reason=str(item.get("review_reason") or "LLM evidence review completed."),
+                    final_severity=severity,
+                    status=status,
+                    analysis_source="llm",
+                    evidence_ids=evidence_ids,
                 )
             )
     except (TypeError, ValueError):
-        return None, "LLM risk analysis failed schema coercion."
+        return None, "LLM assessment failed schema coercion."
     missing = set(finding_map) - seen
     if missing:
-        return None, f"LLM risk analysis missing finding_ids: {', '.join(sorted(missing))}."
-    return analyses, None
-
-
-def _llm_batch_false_positive_review(findings: list[Finding], evidences: list[Any]) -> tuple[list[ReviewResult] | None, str | None]:
-    if not findings:
-        return [], None
-    data, fallback_reason = _call_llm_json(
-        "You are reviewing static-scan findings for likely false positives. Return only compact JSON.",
-        {
-            "task": "Decide whether these findings are likely false positives using only the evidence. Return one result per finding_id.",
-            "schema": {
-                "review_results": [
-                    {
-                        "finding_id": "string",
-                        "is_false_positive": "boolean",
-                        "reason": "string",
-                        "final_severity": "low|medium|high|critical",
-                    }
-                ]
-            },
-            "findings": _findings_with_evidence(findings, evidences),
-        },
+        return None, f"LLM assessment missing finding_ids: {', '.join(sorted(missing))}."
+    return (
+        FindingAssessmentBatch(
+            findings=assessed_findings,
+            risk_analyses=analyses,
+            review_results=reviews,
+            analysis_source="llm",
+            token_usage=token_usage,
+        ),
+        None,
     )
-    if not data:
-        return None, fallback_reason
-    items = data.get("review_results")
-    if not isinstance(items, list):
-        return None, "LLM response missing review_results list."
-    finding_map = {finding.finding_id: finding for finding in findings}
-    seen: set[str] = set()
-    reviews: list[ReviewResult] = []
-    for item in items:
-        if not isinstance(item, dict):
-            return None, "LLM review item is not an object."
-        finding_id = str(item.get("finding_id") or "")
-        finding = finding_map.get(finding_id)
-        if not finding:
-            continue
-        seen.add(finding_id)
-        reviews.append(
-            ReviewResult(
-                finding_id=finding_id,
-                is_false_positive=bool(item.get("is_false_positive", False)),
-                reason=str(item.get("reason") or "LLM review completed."),
-                final_severity=str(item.get("final_severity") or finding.severity),
-                analysis_source="llm",
-            )
-        )
-    missing = set(finding_map) - seen
-    if missing:
-        return None, f"LLM false-positive review missing finding_ids: {', '.join(sorted(missing))}."
-    return reviews, None
 
 
 def _llm_batch_fix_suggestions(findings: list[Finding], evidences: list[Any]) -> tuple[list[FixSuggestion] | None, str | None]:
@@ -643,10 +780,11 @@ def _llm_batch_fix_suggestions(findings: list[Finding], evidences: list[Any]) ->
         suggestions.append(
             FixSuggestion(
                 finding_id=finding_id,
-                suggestion=str(item.get("suggestion") or template_suggestion),
-                safe_code_example=str(item.get("safe_code_example") or template_code),
-                patch_hint=str(item.get("patch_hint") or template_hint),
+                suggestion=redact_sensitive_text(str(item.get("suggestion") or template_suggestion)),
+                safe_code_example=DEFAULT_SANITIZER.sanitize_code(str(item.get("safe_code_example") or template_code)),
+                patch_hint=redact_sensitive_text(str(item.get("patch_hint") or template_hint)),
                 analysis_source="llm",
+                evidence_ids=finding.evidence_ids,
             )
         )
     missing = set(finding_map) - seen
@@ -701,127 +839,3 @@ def _call_llm_json_with_usage(system_prompt: str, payload: dict[str, Any]) -> tu
         return None, f"LLM request failed: {exc.reason}.", 0
     except OSError as exc:
         return None, f"LLM request failed: {exc}.", 0
-
-
-def _to_markdown(report: AuditReport, state: dict[str, Any]) -> str:
-    fix_map = {item.finding_id: item for item in state.get("fix_suggestions", [])}
-    risk_map = {item.finding_id: item for item in state.get("risk_analyses", [])}
-    review_map = {item.finding_id: item for item in state.get("review_results", [])}
-    lines = [f"# CodeAudit Report {report.report_id}", "", f"- Mode: {report.mode}", f"- Summary: {report.summary}", "", "## Risk Stats"]
-    for key, value in report.risk_stats.items():
-        lines.append(f"- {key}: {value}")
-    if report.project_profile:
-        profile = report.project_profile
-        lines.extend(
-            [
-                "",
-                "## Project Profile",
-                f"- Languages: {', '.join(profile.languages) or 'N/A'}",
-                f"- Frameworks: {', '.join(profile.frameworks) or 'N/A'}",
-                f"- Entrypoints: {', '.join(profile.entrypoints) or 'N/A'}",
-                f"- Route files: {', '.join(profile.route_files) or 'N/A'}",
-                f"- Auth files: {', '.join(profile.auth_files) or 'N/A'}",
-                f"- DB files: {', '.join(profile.db_files) or 'N/A'}",
-                f"- Upload files: {', '.join(profile.upload_files) or 'N/A'}",
-                f"- Risk surfaces: {', '.join(profile.risk_surfaces) or 'N/A'}",
-            ]
-        )
-    if report.vuln_knowledge:
-        lines.extend(["", "## Vulnerability Knowledge"])
-        for item in report.vuln_knowledge:
-            lines.append(f"- {item.title} (`{item.knowledge_id}`): {', '.join(item.matched_risk_types)}")
-    if report.audit_plan:
-        lines.extend(
-            [
-                "",
-                "## Audit Plan",
-                f"- Planner source: {report.audit_plan.planner_source}",
-                f"- Summary: {report.audit_plan.summary}",
-            ]
-        )
-        if report.audit_plan.fallback_reason:
-            lines.append(f"- Fallback reason: {report.audit_plan.fallback_reason}")
-        for stage in report.audit_plan.stages:
-            lines.extend(
-                [
-                    f"### {stage.stage.value}",
-                    f"- Priority: {stage.priority.value}",
-                    f"- Risk types: {', '.join(stage.risk_types) or 'N/A'}",
-                    f"- Target files: {', '.join(stage.target_files) or 'N/A'}",
-                    f"- Required capabilities: {', '.join(stage.required_capabilities) or 'N/A'}",
-                    f"- Evidence goals: {', '.join(stage.evidence_goals) or 'N/A'}",
-                    f"- Reason: {stage.reason}",
-                ]
-            )
-    if report.tool_plan:
-        lines.extend(
-            [
-                "",
-                "## Tool Plan",
-                f"- Selected tools: {', '.join(report.tool_plan.selected_tools) or 'N/A'}",
-                f"- Selected risk types: {', '.join(report.tool_plan.selected_risk_types) or 'N/A'}",
-                f"- Target files: {', '.join(report.tool_plan.target_files) or 'N/A'}",
-                f"- Validated calls: {len(report.tool_plan.tool_calls)}",
-                f"- Unavailable tools: {', '.join(report.tool_plan.unavailable_tools) or 'N/A'}",
-                f"- Rejected targets: {', '.join(report.tool_plan.rejected_targets) or 'N/A'}",
-                f"- Reason: {report.tool_plan.selection_reason}",
-            ]
-        )
-    if report.tool_results:
-        lines.extend(["", "## Tool Execution"])
-        for result in report.tool_results:
-            suffix = f" skipped: {result.skipped_reason}" if result.skipped_reason else ""
-            fallback = f" fallback: {result.fallback_tool}" if result.fallback_used else ""
-            lines.append(f"- {result.tool_name}: {result.status}, {len(result.findings)} findings.{suffix}{fallback}")
-    if report.audit_stage_results:
-        lines.extend(["", "## Audit Stages"])
-        for stage in report.audit_stage_results:
-            status = str(getattr(stage.status, "value", stage.status))
-            lines.append(
-                f"- {stage.stage_name}: {status}, findings={stage.findings_count}, "
-                f"rounds={stage.metrics.get('tool_rounds', 0)}, decisions={stage.metrics.get('decisions', 0)}"
-            )
-    lines.extend(["", "## Analysis Source"])
-    if report.analysis_summary:
-        for key, value in report.analysis_summary.items():
-            lines.append(f"- {key}: {value}")
-    else:
-        lines.append("- No analysis results.")
-    if report.fallback_reasons:
-        lines.extend(["", "## Fallback Reasons"])
-        for reason in report.fallback_reasons:
-            lines.append(f"- {reason}")
-    lines.extend(["", "## Findings"])
-    for finding in report.findings:
-        risk = risk_map.get(finding.finding_id)
-        review = review_map.get(finding.finding_id)
-        fix = fix_map.get(finding.finding_id)
-        lines.extend(
-            [
-                f"### {finding.rule_id} ({finding.severity})",
-                f"- File: `{finding.file_path}:{finding.line_start}`",
-                f"- Category: {finding.category}",
-                f"- Scanner sources: {', '.join(finding.sources)}",
-                f"- Source rule IDs: {', '.join(finding.source_rule_ids)}",
-                f"- Evidence: `{finding.evidence_text}`",
-                f"- Analysis source: {risk.analysis_source if risk else 'scanner'}",
-                f"- False positive: {review.is_false_positive if review else 'N/A'}",
-                f"- Review reason: {review.reason if review else 'N/A'}",
-                f"- Risk: {risk.risk_reason if risk else finding.message}",
-                f"- Exploit scenario: {risk.exploit_scenario if risk else 'N/A'}",
-                f"- Fix: {fix.suggestion if fix else 'Review manually.'}",
-                "",
-            ]
-        )
-    lines.extend(["## Agent Trace"])
-    for trace in report.traces:
-        details = [f"stage={trace.stage}" if trace.stage else "", f"decision={trace.decision}" if trace.decision else ""]
-        if trace.tool_calls:
-            details.append(f"tools={','.join(trace.tool_calls)}")
-        if trace.llm_used:
-            details.append(f"llm=true tokens={trace.token_usage}")
-        if trace.fallback_used:
-            details.append(f"fallback={trace.fallback_reason}")
-        suffix = f" ({'; '.join(item for item in details if item)})" if any(details) else ""
-        lines.append(f"- {trace.node_name} via {trace.tool_name}: {trace.status} in {trace.elapsed_ms}ms{suffix}")
-    return "\n".join(lines)

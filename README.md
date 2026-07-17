@@ -144,6 +144,7 @@ app/
   diff/             Git diff 读取与解析
   scanners/         Python/Java 内置安全规则
   security_tools/   工具注册、选择、执行和外部适配器
+  reporting/        Markdown、JSON 与 SARIF 报告渲染
   schemas/          Pydantic 结构化模型
   storage/          报告存储
   utils/            文件过滤和 trace
@@ -292,6 +293,9 @@ Streamlit 页面直接调用 Agent 工作流，展示长耗时审计任务的阶
 
 ```text
 data/reports/
+  <report_id>.md
+  <report_id>.json
+  <report_id>.sarif
 ```
 
 报告包含：

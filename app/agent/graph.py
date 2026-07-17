@@ -11,14 +11,13 @@ from app.agent.nodes import (
     audit_reasoner_node,
     diff_loader_node,
     evidence_builder_node,
-    false_positive_review_node,
+    finding_assessor_node,
     finding_builder_node,
     finding_merger_node,
     fix_suggest_node,
     project_reader_node,
     repo_loader_node,
     report_node,
-    risk_analyze_node,
     route_audit_decision,
     route_stage_completion,
     router_node,
@@ -54,8 +53,7 @@ def build_graph():
     graph.add_node("finding_builder", finding_builder_node)
     graph.add_node("stage_finalize", stage_finalize_node)
     graph.add_node("finding_merger", finding_merger_node)
-    graph.add_node("risk_analyze", risk_analyze_node)
-    graph.add_node("false_positive_review", false_positive_review_node)
+    graph.add_node("finding_assessor", finding_assessor_node)
     graph.add_node("fix_suggest", fix_suggest_node)
     graph.add_node("report", report_node)
     graph.set_entry_point("router")
@@ -80,9 +78,8 @@ def build_graph():
         route_stage_completion,
         {"has_next_stage": "stage_scheduler", "all_finished": "finding_merger"},
     )
-    graph.add_edge("finding_merger", "risk_analyze")
-    graph.add_edge("risk_analyze", "false_positive_review")
-    graph.add_edge("false_positive_review", "fix_suggest")
+    graph.add_edge("finding_merger", "finding_assessor")
+    graph.add_edge("finding_assessor", "fix_suggest")
     graph.add_edge("fix_suggest", "report")
     graph.add_edge("report", END)
     return graph.compile()
@@ -111,6 +108,6 @@ def run_audit(initial_state: AuditState) -> AuditState:
                 state = finding_builder_node(state)
                 continue
             state = stage_finalize_node(state)
-    for node in (finding_merger_node, risk_analyze_node, false_positive_review_node, fix_suggest_node, report_node):
+    for node in (finding_merger_node, finding_assessor_node, fix_suggest_node, report_node):
         state = node(state)
     return sync_audit_state(state)

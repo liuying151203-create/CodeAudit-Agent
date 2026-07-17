@@ -8,6 +8,8 @@ class Evidence(BaseModel):
     file_path: str = ""
     start_line: int | None = Field(default=None, ge=1)
     end_line: int | None = Field(default=None, ge=1)
+    local_start_line: int | None = Field(default=None, ge=1)
+    local_end_line: int | None = Field(default=None, ge=1)
     code_snippet: str = ""
     code_context: str
     symbol_name: str | None = None

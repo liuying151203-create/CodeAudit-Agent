@@ -8,14 +8,13 @@ from app.agent.state import normalize_audit_state, sync_audit_state
 from app.agent.tools import (
     AuditPlannerTool,
     AuditReasonerTool,
-    FalsePositiveReviewTool,
+    FindingAssessorTool,
     FindingMergerTool,
     FixSuggestTool,
     GitDiffTool,
     ProjectReaderTool,
     RepoLoaderTool,
     ReportWriterTool,
-    RiskAnalyzeTool,
     ToolExecutorTool,
     ToolSelectorTool,
     VulnKBRetrieverTool,
@@ -427,35 +426,60 @@ def finding_merger_node(state: dict) -> dict:
     return state
 
 
-def risk_analyze_node(state: dict) -> dict:
-    state["risk_analyses"] = trace_tool(
+def finding_assessor_node(state: dict) -> dict:
+    assessment = trace_tool(
         state,
-        "risk_analyze_node",
-        "RiskAnalyzeTool",
+        "finding_assessor_node",
+        "FindingAssessorTool",
         f"{len(state.get('candidate_findings', []))} findings",
-        lambda: RiskAnalyzeTool().run(state.get("candidate_findings", []), state.get("evidences", [])),
+        lambda: FindingAssessorTool().run(state.get("candidate_findings", []), state.get("evidences", [])),
     )
-    return state
-
-
-def false_positive_review_node(state: dict) -> dict:
-    state["review_results"] = trace_tool(
+    state["candidate_findings"] = assessment.findings
+    state["merged_findings"] = assessment.findings
+    state["risk_analyses"] = assessment.risk_analyses
+    state["review_results"] = assessment.review_results
+    state["confirmed_findings"] = [item for item in assessment.findings if item.status == FindingStatus.CONFIRMED]
+    state["dismissed_findings"] = [item for item in assessment.findings if item.status == FindingStatus.DISMISSED]
+    state["needs_review_findings"] = [item for item in assessment.findings if item.status == FindingStatus.NEEDS_REVIEW]
+    state["metrics"].total_tokens += assessment.token_usage
+    _annotate_latest_trace(
         state,
-        "false_positive_review_node",
-        "FalsePositiveReviewTool",
-        f"{len(state.get('candidate_findings', []))} findings",
-        lambda: FalsePositiveReviewTool().run(state.get("candidate_findings", []), state.get("evidences", [])),
+        "review",
+        decision="ASSESS_FINDINGS",
+        output=(
+            f"confirmed={len(state['confirmed_findings'])}, dismissed={len(state['dismissed_findings'])}, "
+            f"needs_review={len(state['needs_review_findings'])}"
+        ),
+        llm_used=assessment.analysis_source == "llm",
+        token_usage=assessment.token_usage,
+        fallback_reason=assessment.fallback_reason,
     )
+    if assessment.fallback_reason:
+        record = FallbackRecord(component="finding_assessor", reason=assessment.fallback_reason, strategy="template")
+        if record not in state.get("fallbacks", []):
+            state["fallbacks"] = [*state.get("fallbacks", []), record]
     return state
 
 
 def fix_suggest_node(state: dict) -> dict:
-    state["fix_suggestions"] = trace_tool(
+    suggestions = trace_tool(
         state,
         "fix_suggest_node",
         "FixSuggestTool",
-        f"{len(state.get('candidate_findings', []))} findings",
-        lambda: FixSuggestTool().run(state.get("candidate_findings", []), state.get("review_results", []), state.get("evidences", [])),
+        f"{len(state.get('confirmed_findings', []))} confirmed findings",
+        lambda: FixSuggestTool().run(
+            state.get("confirmed_findings", []), state.get("evidences", []), state.get("vuln_knowledge", [])
+        ),
+    )
+    state["fix_suggestions"] = suggestions
+    fallback_reason = next((item.fallback_reason for item in suggestions if item.fallback_reason), None)
+    _annotate_latest_trace(
+        state,
+        "review",
+        decision="SUGGEST_FIXES",
+        output=f"{len(suggestions)} fix suggestions",
+        llm_used=any(item.analysis_source == "llm" for item in suggestions),
+        fallback_reason=fallback_reason,
     )
     return state
 

@@ -2,7 +2,7 @@ import unittest
 
 from pydantic import ValidationError
 
-from app.agent.tools import _to_markdown
+from app.reporting import render_markdown
 from app.schemas import (
     AuditBudget,
     AuditDecision,
@@ -154,7 +154,7 @@ class SchemaTests(unittest.TestCase):
             ),
         )
 
-        markdown = _to_markdown(report, {})
+        markdown = render_markdown(report)
 
         self.assertIn("## Audit Plan", markdown)
         self.assertIn("### injection", markdown)

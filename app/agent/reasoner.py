@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.agent.evidence_builder import redact_sensitive_text
+from app.agent.prompt_context import redact_sensitive_text
 from app.agent.planner import PLANNER_CAPABILITIES
 from app.schemas.enums import AuditDecisionType, AuditStageName, Severity
 from app.schemas.evidence import Evidence

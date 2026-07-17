@@ -3,7 +3,7 @@
 from app.schemas.enums import AuditDecisionType, AuditStageName, FindingStatus, ProfileScope, ScanMode, Severity, StageStatus, ToolCallStatus
 from app.schemas.evidence import Evidence
 from app.schemas.execution import ToolObservation, ToolRequest, ToolRunResult, ValidatedToolCall
-from app.schemas.finding import Finding, FindingDraft, FixSuggestion, ReviewResult, RiskAnalysis
+from app.schemas.finding import Finding, FindingAssessmentBatch, FindingDraft, FindingProvenance, FixSuggestion, ReviewResult, RiskAnalysis
 from app.schemas.planning import AuditPlan, AuditStagePlan
 from app.schemas.project import AuditStageResult, ProjectProfile, SecurityTool, ToolExecutionResult, ToolPlan, VulnKnowledge
 from app.schemas.report import AgentTrace, AuditReport
@@ -26,7 +26,9 @@ __all__ = [
     "Evidence",
     "FallbackRecord",
     "Finding",
+    "FindingAssessmentBatch",
     "FindingDraft",
+    "FindingProvenance",
     "FindingStatus",
     "FixSuggestion",
     "ProfileScope",

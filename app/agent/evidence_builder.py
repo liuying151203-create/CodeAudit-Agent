@@ -1,17 +1,12 @@
 from __future__ import annotations
 
-import re
 from typing import Any
 
+from app.agent.prompt_context import DEFAULT_SANITIZER, redact_sensitive_text
 from app.context.context_extractor import extract_evidence
 from app.schemas.enums import AuditStageName
 from app.schemas.evidence import Evidence
 from app.schemas.execution import ToolRunResult
-
-SECRET_VALUE_PATTERN = re.compile(
-    r"(?i)(\b(?:api[_-]?key|token|password|passwd|private[_-]?key|secret)\b\s*[:=]\s*)(['\"]?)[^\s,'\"]+\2"
-)
-
 
 def build_stage_evidence(
     results: list[ToolRunResult],
@@ -44,7 +39,7 @@ def build_stage_evidence(
             if not observation.file_path:
                 continue
             content_lines = observation.content.splitlines()[:max_context_lines]
-            content = redact_sensitive_text("\n".join(content_lines))
+            content = DEFAULT_SANITIZER.sanitize_code("\n".join(content_lines))
             evidence_id = f"evidence:{result.call_id or result.tool_name}:{observation.file_path}:{index}"
             evidence_by_id[evidence_id] = Evidence(
                 evidence_id=evidence_id,
@@ -61,7 +56,3 @@ def build_stage_evidence(
                 is_changed_line=bool(observation.metadata.get("changed_line")),
             )
     return list(evidence_by_id.values()), len(evidence_by_id) - before
-
-
-def redact_sensitive_text(text: str) -> str:
-    return SECRET_VALUE_PATTERN.sub(r"\1<redacted>", text)

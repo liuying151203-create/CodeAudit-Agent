@@ -41,6 +41,8 @@ class AuditReport(BaseModel):
     audit_stage_results: list[AuditStageResult] = Field(default_factory=list)
     evidences: list[Evidence] = Field(default_factory=list)
     findings: list[Finding] = Field(default_factory=list)
+    dismissed_findings: list[Finding] = Field(default_factory=list)
+    needs_review_findings: list[Finding] = Field(default_factory=list)
     risk_analyses: list[RiskAnalysis] = Field(default_factory=list)
     review_results: list[ReviewResult] = Field(default_factory=list)
     fix_suggestions: list[FixSuggestion] = Field(default_factory=list)
@@ -54,3 +56,4 @@ class AuditReport(BaseModel):
     state_snapshot: dict[str, Any] = Field(default_factory=dict)
     markdown_path: str = ""
     json_path: str = ""
+    sarif_path: str = ""
