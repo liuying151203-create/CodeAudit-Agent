@@ -7,6 +7,7 @@ import urllib.request
 import uuid
 from collections import Counter
 from pathlib import Path
+from time import monotonic
 from typing import Any
 
 try:
@@ -19,17 +20,18 @@ class BaseTool:
     name = ""
     description = ""
 
-from app.context.context_extractor import extract_evidence
 from app.diff.diff_parser import parse_unified_diff
 from app.diff.git_diff_loader import load_git_diff
 from app.knowledge.retriever import rerank_knowledge, retrieve_vulnerability_knowledge
 from app.project.reader import build_project_profile
+from app.agent.reasoner import build_reasoner_payload, fallback_reasoner_decision, parse_reasoner_decision
 from app.security_tools.gateway import execute_tool_plan, select_tool_plan
 from app.schemas.finding import Finding, FixSuggestion, ReviewResult, RiskAnalysis
-from app.schemas.planning import AuditPlan
-from app.schemas.project import AuditStageResult, ProjectProfile, ToolExecutionResult, ToolPlan, VulnKnowledge
+from app.schemas.evidence import Evidence
+from app.schemas.planning import AuditPlan, AuditStagePlan
+from app.schemas.project import ProjectProfile, ToolExecutionResult, ToolPlan, VulnKnowledge
 from app.schemas.report import AuditReport
-from app.schemas.runtime import AuditBudget, AuditMetrics, FallbackRecord
+from app.schemas.runtime import AuditBudget, AuditDecision, AuditLoopRuntime, AuditMetrics, FallbackRecord
 from app.agent.planner import build_planner_payload, build_template_audit_plan, parse_llm_audit_plan
 from app.utils.file_filter import should_scan_file
 
@@ -59,14 +61,6 @@ class GitDiffTool(BaseTool):
     def run(self, repo_path: str | None = None, diff_text: str | None = None, diff_mode: str = "cached") -> tuple[str, list[dict[str, Any]]]:
         text = diff_text or load_git_diff(repo_path or ".", diff_mode)
         return text, parse_unified_diff(text)
-
-
-class ContextExtractorTool(BaseTool):
-    name: str = "context_extractor"
-    description: str = "Extract code evidence around findings."
-
-    def run(self, findings: list[Finding], files: list[dict[str, Any]]):
-        return [extract_evidence(finding, files) for finding in findings]
 
 
 class ProjectReaderTool(BaseTool):
@@ -136,6 +130,64 @@ class AuditPlannerTool(BaseTool):
         return template_plan
 
 
+class AuditReasonerTool(BaseTool):
+    name: str = "audit_reasoner"
+    description: str = "Choose the next evidence-backed action for the current audit stage."
+
+    def run(
+        self,
+        stage: AuditStagePlan,
+        tool_results: list[ToolExecutionResult],
+        evidences: list[Evidence],
+        findings: list[Finding],
+        files: list[dict[str, Any]],
+        budget: AuditBudget,
+        loop: AuditLoopRuntime,
+        knowledge: list[VulnKnowledge],
+    ) -> AuditDecision:
+        stage_elapsed = monotonic() - loop.stage_started_at if loop.stage_started_at else 0
+        total_elapsed = monotonic() - loop.audit_started_at if loop.audit_started_at else 0
+        if loop.decision_count >= budget.max_decisions_per_stage:
+            return AuditDecision(decision="FINISH_STAGE", reason="Stage decision budget exhausted.", decision_source="budget")
+        if budget.used_tokens >= budget.max_stage_tokens:
+            return AuditDecision(decision="FINISH_STAGE", reason="Stage token budget exhausted.", decision_source="budget")
+        if stage_elapsed >= budget.max_stage_seconds or total_elapsed >= budget.max_total_seconds:
+            return AuditDecision(decision="FINISH_STAGE", reason="Audit time budget exhausted.", decision_source="budget")
+
+        fallback_reason = None
+        if _llm_enabled():
+            payload = build_reasoner_payload(stage, tool_results, evidences, findings, budget, loop, knowledge)
+            data, fallback_reason, token_usage = _call_llm_json_with_usage(
+                "You are an evidence-driven code security audit agent. Return one valid JSON decision. Never invent files, evidence IDs, or tool capabilities.",
+                payload,
+            )
+            if data:
+                decision = parse_reasoner_decision(
+                    data,
+                    stage,
+                    evidences,
+                    [str(item.get("path") or "") for item in files],
+                    budget,
+                    loop,
+                    token_usage,
+                )
+                if decision:
+                    return decision
+                fallback_reason = "LLM audit decision failed schema or evidence validation."
+        else:
+            fallback_reason = "LLM API key is not configured."
+        return fallback_reasoner_decision(
+            stage,
+            tool_results,
+            evidences,
+            findings,
+            [str(item.get("path") or "") for item in files],
+            budget,
+            loop,
+            fallback_reason,
+        )
+
+
 class ToolSelectorTool(BaseTool):
     name: str = "tool_selector"
     description: str = "Select security tools based on project profile, retrieved vulnerability knowledge and scan mode."
@@ -149,24 +201,24 @@ class ToolSelectorTool(BaseTool):
         audit_plan: AuditPlan | None = None,
         repo_path: str | None = None,
         budget: AuditBudget | None = None,
+        strict_capabilities: bool = False,
     ) -> ToolPlan:
-        return select_tool_plan(profile, knowledge, scan_mode, files, audit_plan, repo_path, budget)
+        return select_tool_plan(profile, knowledge, scan_mode, files, audit_plan, repo_path, budget, strict_capabilities=strict_capabilities)
 
 
 class ToolExecutorTool(BaseTool):
     name: str = "tool_executor"
     description: str = "Execute selected security tools safely. External tools are skipped when unavailable."
 
-    def run(self, plan: ToolPlan, files: list[dict[str, Any]], mode: str, repo_path: str | None = None) -> tuple[list[ToolExecutionResult], list[AuditStageResult]]:
-        results = execute_tool_plan(plan, files, repo_path, mode)
-        return results, _build_stage_results(results)
+    def run(self, plan: ToolPlan, files: list[dict[str, Any]], mode: str, repo_path: str | None = None) -> list[ToolExecutionResult]:
+        return execute_tool_plan(plan, files, repo_path, mode)
 
 
 class FindingMergerTool(BaseTool):
     name: str = "finding_merger"
     description: str = "Merge and deduplicate findings emitted by selected tools."
 
-    def run(self, tool_results: list[ToolExecutionResult]) -> list[Finding]:
+    def run(self, tool_results: list[ToolExecutionResult], additional_findings: list[Finding] | None = None) -> list[Finding]:
         merged: dict[tuple[str, str, int, int], Finding] = {}
         severity_rank = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
         for result in tool_results:
@@ -187,27 +239,25 @@ class FindingMergerTool(BaseTool):
                         "source_rule_ids": source_rule_ids,
                     }
                 )
+        for finding in additional_findings or []:
+            key = (finding.category.lower(), finding.file_path, finding.line_start, finding.line_end)
+            if key not in merged:
+                merged[key] = finding
+                continue
+            existing = merged[key]
+            sources = list(dict.fromkeys([*existing.sources, *finding.sources]))
+            source_rule_ids = list(dict.fromkeys([*existing.source_rule_ids, *finding.source_rule_ids]))
+            severity = finding.severity if severity_rank[finding.severity] > severity_rank[existing.severity] else existing.severity
+            merged[key] = existing.model_copy(
+                update={
+                    "severity": severity,
+                    "confidence": max(existing.confidence, finding.confidence),
+                    "sources": sources,
+                    "source_rule_ids": source_rule_ids,
+                    "evidence_ids": list(dict.fromkeys([*existing.evidence_ids, *finding.evidence_ids])),
+                }
+            )
         return list(merged.values())
-
-
-def _build_stage_results(results: list[ToolExecutionResult]) -> list[AuditStageResult]:
-    stage_risks = {
-        "init": [],
-        "secret": ["Secrets"],
-        "injection": ["SQL Injection"],
-        "command": ["Command Execution"],
-        "file": ["Path Traversal", "Unsafe Deserialization"],
-        "auth": ["Broken Access Control"],
-        "review": [],
-        "report": [],
-    }
-    all_findings = [finding for result in results for finding in result.findings]
-    stage_results: list[AuditStageResult] = []
-    for stage, categories in stage_risks.items():
-        count = len([finding for finding in all_findings if finding.category in categories]) if categories else 0
-        status = "success" if stage in {"init", "secret", "injection", "command", "review", "report"} else "planned"
-        stage_results.append(AuditStageResult(stage_name=stage, status=status, findings_count=count, summary=f"{stage} stage findings: {count}"))
-    return stage_results
 
 
 class RiskAnalyzeTool(BaseTool):
@@ -319,9 +369,13 @@ class ReportWriterTool(BaseTool):
             fallback_reasons = sorted({*fallback_reasons, audit_plan.fallback_reason})
         if tool_plan and tool_plan.fallback_reasons:
             fallback_reasons = sorted({*fallback_reasons, *tool_plan.fallback_reasons})
-        fallback_records: list[FallbackRecord] = state.get("fallbacks", [])
-        if not fallback_records:
-            fallback_records = [
+        fallback_records: list[FallbackRecord] = list(state.get("fallbacks", []))
+        fallback_reasons = sorted({*fallback_reasons, *(record.reason for record in fallback_records)})
+        recorded_reasons = {record.reason for record in fallback_records}
+        for reason in fallback_reasons:
+            if reason in recorded_reasons:
+                continue
+            fallback_records.append(
                 FallbackRecord(
                     component=(
                         "audit_planner"
@@ -333,8 +387,7 @@ class ReportWriterTool(BaseTool):
                     reason=reason,
                     strategy="builtin_tool" if tool_plan and reason in tool_plan.fallback_reasons else "template",
                 )
-                for reason in fallback_reasons
-            ]
+            )
         confirmed_findings = [
             finding
             for finding in findings
@@ -344,10 +397,11 @@ class ReportWriterTool(BaseTool):
         metrics.detected_findings = len(findings)
         metrics.confirmed_findings = len(confirmed_findings)
         metrics.dismissed_findings = len(findings) - len(confirmed_findings)
-        metrics.tool_call_count = len(state.get("tool_results", []))
+        metrics.tool_call_count = len(state.get("validated_tool_calls", []))
         metrics.llm_call_count = sum(
             [
                 bool(audit_plan and audit_plan.planner_source == "llm"),
+                sum(1 for trace in state.get("traces", []) if trace.node_name == "audit_reasoner_node" and trace.llm_used),
                 any(item.analysis_source == "llm" for item in risk_analyses),
                 any(item.analysis_source == "llm" for item in review_results),
                 any(item.analysis_source == "llm" for item in fix_suggestions),
@@ -355,7 +409,7 @@ class ReportWriterTool(BaseTool):
         )
         metrics.fallback_count = len(fallback_records)
         metrics.total_latency_ms = sum(getattr(trace, "elapsed_ms", 0) for trace in state.get("traces", []))
-        metrics.stage_coverage = {item.stage_name: str(item.status) for item in state.get("audit_stage_results", [])}
+        metrics.stage_coverage = {item.stage_name: str(getattr(item.status, "value", item.status)) for item in state.get("audit_stage_results", [])}
         state["confirmed_findings"] = confirmed_findings
         state["fallbacks"] = fallback_records
         state["metrics"] = metrics
@@ -602,9 +656,14 @@ def _llm_batch_fix_suggestions(findings: list[Finding], evidences: list[Any]) ->
 
 
 def _call_llm_json(system_prompt: str, payload: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    parsed, error, _ = _call_llm_json_with_usage(system_prompt, payload)
+    return parsed, error
+
+
+def _call_llm_json_with_usage(system_prompt: str, payload: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None, int]:
     api_key = os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY")
     if not api_key:
-        return None, "LLM API key is not configured."
+        return None, "LLM API key is not configured.", 0
     base_url = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/")
     model = os.getenv("LLM_MODEL", "gpt-4o-mini")
     timeout = int(os.getenv("LLM_TIMEOUT_SECONDS", "30"))
@@ -629,18 +688,19 @@ def _call_llm_json(system_prompt: str, payload: dict[str, Any]) -> tuple[dict[st
         content = raw["choices"][0]["message"]["content"]
         parsed = json.loads(content)
         if not isinstance(parsed, dict):
-            return None, "LLM response JSON is not an object."
-        return parsed, None
+            return None, "LLM response JSON is not an object.", 0
+        usage = raw.get("usage") or {}
+        return parsed, None, int(usage.get("total_tokens") or 0)
     except KeyError:
-        return None, "LLM response missing expected chat completion fields."
+        return None, "LLM response missing expected chat completion fields.", 0
     except json.JSONDecodeError:
-        return None, "LLM response is not valid JSON."
+        return None, "LLM response is not valid JSON.", 0
     except TimeoutError:
-        return None, "LLM request timed out."
+        return None, "LLM request timed out.", 0
     except urllib.error.URLError as exc:
-        return None, f"LLM request failed: {exc.reason}."
+        return None, f"LLM request failed: {exc.reason}.", 0
     except OSError as exc:
-        return None, f"LLM request failed: {exc}."
+        return None, f"LLM request failed: {exc}.", 0
 
 
 def _to_markdown(report: AuditReport, state: dict[str, Any]) -> str:
@@ -716,7 +776,11 @@ def _to_markdown(report: AuditReport, state: dict[str, Any]) -> str:
     if report.audit_stage_results:
         lines.extend(["", "## Audit Stages"])
         for stage in report.audit_stage_results:
-            lines.append(f"- {stage.stage_name}: {stage.status}, findings={stage.findings_count}")
+            status = str(getattr(stage.status, "value", stage.status))
+            lines.append(
+                f"- {stage.stage_name}: {status}, findings={stage.findings_count}, "
+                f"rounds={stage.metrics.get('tool_rounds', 0)}, decisions={stage.metrics.get('decisions', 0)}"
+            )
     lines.extend(["", "## Analysis Source"])
     if report.analysis_summary:
         for key, value in report.analysis_summary.items():
@@ -751,5 +815,13 @@ def _to_markdown(report: AuditReport, state: dict[str, Any]) -> str:
         )
     lines.extend(["## Agent Trace"])
     for trace in report.traces:
-        lines.append(f"- {trace.node_name} via {trace.tool_name}: {trace.status} in {trace.elapsed_ms}ms")
+        details = [f"stage={trace.stage}" if trace.stage else "", f"decision={trace.decision}" if trace.decision else ""]
+        if trace.tool_calls:
+            details.append(f"tools={','.join(trace.tool_calls)}")
+        if trace.llm_used:
+            details.append(f"llm=true tokens={trace.token_usage}")
+        if trace.fallback_used:
+            details.append(f"fallback={trace.fallback_reason}")
+        suffix = f" ({'; '.join(item for item in details if item)})" if any(details) else ""
+        lines.append(f"- {trace.node_name} via {trace.tool_name}: {trace.status} in {trace.elapsed_ms}ms{suffix}")
     return "\n".join(lines)

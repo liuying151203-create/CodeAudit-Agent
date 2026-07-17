@@ -1,0 +1,36 @@
+{
+  "rules": [
+    {
+      "id": "codeaudit.python.subprocess-shell",
+      "languages": ["python"],
+      "severity": "ERROR",
+      "message": "subprocess with shell=True can execute injected commands.",
+      "metadata": {"risk_type": "Command Execution"},
+      "pattern": "subprocess.$FUNC(..., shell=True, ...)"
+    },
+    {
+      "id": "codeaudit.python.os-system",
+      "languages": ["python"],
+      "severity": "ERROR",
+      "message": "os.system can execute untrusted command text.",
+      "metadata": {"risk_type": "Command Execution"},
+      "pattern": "os.system(...)"
+    },
+    {
+      "id": "codeaudit.java.runtime-exec",
+      "languages": ["java"],
+      "severity": "ERROR",
+      "message": "Runtime.exec can execute untrusted command text.",
+      "metadata": {"risk_type": "Command Execution"},
+      "pattern": "Runtime.getRuntime().exec(...)"
+    },
+    {
+      "id": "codeaudit.java.process-builder",
+      "languages": ["java"],
+      "severity": "WARNING",
+      "message": "Review ProcessBuilder arguments for untrusted input.",
+      "metadata": {"risk_type": "Command Execution"},
+      "pattern": "new ProcessBuilder(...)"
+    }
+  ]
+}

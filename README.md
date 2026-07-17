@@ -176,6 +176,8 @@ pip install bandit
 
 Semgrep 和 Gitleaks 按各自平台的官方方式安装，并确保 `semgrep`、`gitleaks` 命令位于 `PATH`。外部工具未安装时，系统会记录 fallback 并使用内置规则继续审计。
 
+Windows 环境中，如果 Semgrep 安装在当前 Python 环境，工具适配器会优先调用包内的 `semgrep-core.exe`，绕过可能较慢的 CLI 包装层；Linux 和 macOS 继续使用标准 `semgrep scan` 命令。
+
 ### 2. 配置环境变量
 
 ```powershell

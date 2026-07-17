@@ -7,7 +7,7 @@ from app.schemas.finding import Finding, FindingDraft, FixSuggestion, ReviewResu
 from app.schemas.planning import AuditPlan, AuditStagePlan
 from app.schemas.project import AuditStageResult, ProjectProfile, SecurityTool, ToolExecutionResult, ToolPlan, VulnKnowledge
 from app.schemas.report import AgentTrace, AuditReport
-from app.schemas.runtime import AuditBudget, AuditDecision, AuditError, AuditHypothesis, AuditMetrics, FallbackRecord
+from app.schemas.runtime import AuditBudget, AuditDecision, AuditError, AuditHypothesis, AuditLoopRuntime, AuditMetrics, FallbackRecord
 
 __all__ = [
     "AgentTrace",
@@ -16,6 +16,7 @@ __all__ = [
     "AuditDecisionType",
     "AuditError",
     "AuditHypothesis",
+    "AuditLoopRuntime",
     "AuditMetrics",
     "AuditPlan",
     "AuditReport",

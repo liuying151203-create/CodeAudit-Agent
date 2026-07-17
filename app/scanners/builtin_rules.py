@@ -69,8 +69,10 @@ def scan_text(file_path: str, text: str, changed_lines: set[int] | None = None, 
             name = _call_name(node.func)
             line = getattr(node, "lineno", 1)
             evidence = lines[line - 1] if 0 < line <= len(lines) else name
-            if name in {"eval", "exec", "pickle.load", "yaml.load"}:
-                add("PY_DANGEROUS_FUNCTION", line, "high", "Dangerous Function", f"Dangerous call: {name}.", evidence)
+            if name in {"eval", "exec"}:
+                add("PY_DANGEROUS_FUNCTION", line, "high", "Command Execution", f"Dangerous call: {name}.", evidence)
+            if name in {"pickle.load", "yaml.load"}:
+                add("PY_DANGEROUS_FUNCTION", line, "high", "Unsafe Deserialization", f"Dangerous call: {name}.", evidence)
             if name == "os.system":
                 add("PY_OS_SYSTEM", line, "high", "Command Execution", "os.system can execute injected commands.", evidence)
     return findings

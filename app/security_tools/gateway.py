@@ -39,6 +39,7 @@ def select_tool_plan(
     repo_path: str | None = None,
     budget: AuditBudget | None = None,
     registry: list[SecurityTool] | None = None,
+    strict_capabilities: bool = False,
 ) -> ToolPlan:
     tools = registry or load_security_tools()
     budget = budget or AuditBudget()
@@ -61,7 +62,13 @@ def select_tool_plan(
             continue
         if not _intersects(profile.languages, tool.supported_languages):
             continue
-        if not (_intersects(risk_types, tool.risk_types) or bool(capabilities & set(tool.capabilities))):
+        capability_match = bool(capabilities & set(tool.capabilities))
+        risk_match = _intersects(risk_types, tool.risk_types)
+        if strict_capabilities and capabilities and not capability_match:
+            continue
+        if not strict_capabilities and not (capability_match or risk_match):
+            continue
+        if strict_capabilities and not capabilities and not risk_match:
             continue
         if tool.adapter in EXTERNAL_ADAPTERS and root is None:
             unavailable.append(tool.name)
@@ -81,7 +88,15 @@ def select_tool_plan(
         selected.append(tool)
         reasons.append(f"{tool.name} provides {', '.join(sorted(set(tool.capabilities) & capabilities)) or 'matching risk coverage'}.")
 
-    selected = _ensure_builtin_fallbacks(selected, tools, profile, risk_types)
+    selected = _ensure_builtin_fallbacks(selected, tools, profile, risk_types, capabilities, strict_capabilities)
+    adapter_priority = {"builtin_rules": 1, "builtin_secret": 1, "context_extractor": 2}
+    selected.sort(
+        key=lambda tool: (
+            0 if tool.requires_install else adapter_priority.get(tool.adapter or "", 1),
+            -len(capabilities & set(tool.capabilities)),
+            tool.name,
+        )
+    )
     calls: list[ValidatedToolCall] = []
     for tool in selected:
         tool_targets = available_paths if tool.adapter == "builtin_secret" else target_files
@@ -125,8 +140,13 @@ def execute_tool_plan(
     executable_calls = [call for call in plan.tool_calls if call.tool_name in tools]
     max_workers = max(1, min(4, len(executable_calls)))
     with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="security-tool") as pool:
-        futures = [pool.submit(execute_adapter, tools[call.tool_name], call, files, root, mode) for call in executable_calls]
-        results = [future.result() for future in futures]
+        futures = [(call, pool.submit(execute_adapter, tools[call.tool_name], call, files, root, mode)) for call in executable_calls]
+        results = []
+        for call, future in futures:
+            result = future.result()
+            tool = tools[call.tool_name]
+            metadata = {**result.metadata, "capabilities": tool.capabilities, "target_files": call.target_files}
+            results.append(result.model_copy(update={"metadata": metadata}))
 
     for tool_name in plan.unavailable_tools:
         reason = next((item for item in plan.fallback_reasons if item.startswith(tool_name)), f"{tool_name} is unavailable.")
@@ -154,10 +174,20 @@ def execute_tool_plan(
     return results
 
 
-def _ensure_builtin_fallbacks(selected: list[SecurityTool], tools: list[SecurityTool], profile: ProjectProfile, risk_types: list[str]) -> list[SecurityTool]:
+def _ensure_builtin_fallbacks(
+    selected: list[SecurityTool],
+    tools: list[SecurityTool],
+    profile: ProjectProfile,
+    risk_types: list[str],
+    capabilities: set[str],
+    strict_capabilities: bool,
+) -> list[SecurityTool]:
     selected_names = {tool.name for tool in selected}
-    required = {"secret_scanner"}
-    if {risk.lower() for risk in risk_types} - {"secrets"} and set(profile.languages) & {"Python", "Java"}:
+    required: set[str] = set()
+    if not strict_capabilities or "scan_secrets" in capabilities or (not capabilities and "Secrets" in risk_types):
+        required.add("secret_scanner")
+    non_secret_scan = capabilities & {"scan_sql_patterns", "scan_command_execution", "scan_file_paths", "scan_deserialization"}
+    if (non_secret_scan or (not capabilities and {risk.lower() for risk in risk_types} - {"secrets"})) and set(profile.languages) & {"Python", "Java"}:
         required.add("custom_rule_scanner")
     for name in ("secret_scanner", "custom_rule_scanner"):
         if name not in required or name in selected_names:

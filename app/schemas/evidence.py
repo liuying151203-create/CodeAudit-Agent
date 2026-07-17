@@ -1,4 +1,5 @@
 from app.schemas.base import BaseModel, Field
+from app.schemas.enums import AuditStageName
 
 
 class Evidence(BaseModel):
@@ -17,4 +18,6 @@ class Evidence(BaseModel):
     is_changed_line: bool = False
     changed_line: bool = False
     source_tool: str = "context_extractor"
+    source_call_id: str | None = None
+    stage: AuditStageName | None = None
     surrounding_lines: list[str] = Field(default_factory=list)

@@ -22,6 +22,7 @@ class AuditBudget(BaseModel):
     max_stage_tokens: int = Field(default=12000, ge=0)
     max_stage_seconds: int = Field(default=120, ge=1)
     max_total_seconds: int = Field(default=600, ge=1)
+    max_decisions_per_stage: int = Field(default=20, ge=1, le=100)
     used_tool_rounds: dict[str, int] = Field(default_factory=dict)
     used_tool_calls: int = 0
     used_tokens: int = 0
@@ -68,6 +69,9 @@ class AuditDecision(BaseModel):
     reason: str
     tool_request: ToolRequest | None = None
     finding: FindingDraft | None = None
+    decision_source: str = "template"
+    fallback_reason: str | None = None
+    token_usage: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")
     def validate_payload(self) -> "AuditDecision":
@@ -95,3 +99,18 @@ class AuditStageResult(BaseModel):
     fallback_reasons: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     metrics: dict[str, Any] = Field(default_factory=dict)
+
+
+class AuditLoopRuntime(BaseModel):
+    audit_started_at: float = Field(default=0.0, ge=0)
+    stage_started_at: float = Field(default=0.0, ge=0)
+    current_round: int = Field(default=0, ge=0)
+    decision_count: int = Field(default=0, ge=0)
+    evidence_before_round: int = Field(default=0, ge=0)
+    new_evidence_count: int = Field(default=0, ge=0)
+    no_progress_rounds: int = Field(default=0, ge=0)
+    executed_call_signatures: list[str] = Field(default_factory=list)
+    emitted_finding_fingerprints: list[str] = Field(default_factory=list)
+    termination_reason: str | None = None
+    fallback_reasons: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)

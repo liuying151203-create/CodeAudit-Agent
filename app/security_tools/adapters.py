@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import importlib.util
+import os
+import re
 import subprocess
 import tempfile
 import time
@@ -9,12 +12,12 @@ from pathlib import Path
 from typing import Any
 
 from app.scanners.builtin_rules import scan_files
-from app.schemas.execution import ToolRunResult, ValidatedToolCall
+from app.schemas.execution import ToolObservation, ToolRunResult, ValidatedToolCall
 from app.schemas.finding import Finding
 from app.schemas.project import SecurityTool
 
 MAX_OUTPUT_BYTES = 2_000_000
-SEMGREP_CONFIG = Path(__file__).resolve().parents[2] / "config" / "semgrep_rules.yml"
+SEMGREP_CONFIG = Path(__file__).resolve().parents[2] / "config" / "semgrep_rules.json"
 
 
 @dataclass
@@ -44,7 +47,21 @@ def execute_adapter(
             findings = [item for item in _builtin_findings(selected_files, tool.name) if item.category != "Secrets"]
             return _success(call, findings, started, f"{len(findings)} builtin rule findings")
         if tool.adapter == "context_extractor":
-            return _success(call, [], started, "Context extraction is deferred until findings are merged.")
+            observations = []
+            for item in selected_files:
+                lines = str(item.get("content") or "").splitlines()[:80]
+                observations.append(
+                    ToolObservation(
+                        observation_type="file_context",
+                        content=_redact_context("\n".join(lines)),
+                        file_path=str(item.get("path") or ""),
+                        start_line=1 if lines else None,
+                        end_line=len(lines) or None,
+                        metadata={"changed_line": bool(item.get("changed_lines"))},
+                    )
+                )
+            result = _success(call, [], started, f"{len(observations)} context observations")
+            return result.model_copy(update={"observations": observations})
         if repo_root is None:
             return _skipped(call, started, "External tools require a validated repository path.")
         if tool.adapter == "bandit_json":
@@ -77,14 +94,14 @@ def run_fixed_command(argv: list[str], cwd: Path, timeout_seconds: int) -> Comma
             stdout=stdout_file,
             stderr=stderr_file,
             shell=False,
+            env={**os.environ, "SEMGREP_ENABLE_VERSION_CHECK": "0", "SEMGREP_SEND_METRICS": "off"},
         )
         timed_out = False
         try:
             process.wait(timeout=timeout_seconds)
         except subprocess.TimeoutExpired:
             timed_out = True
-            process.kill()
-            process.wait()
+            _terminate_process_tree(process)
         stdout, stdout_truncated = _read_bounded(stdout_file)
         stderr, stderr_truncated = _read_bounded(stderr_file)
     return CommandOutput(
@@ -124,7 +141,8 @@ def parse_bandit_json(payload: str, repo_root: Path) -> list[Finding]:
 
 
 def parse_semgrep_json(payload: str, repo_root: Path) -> list[Finding]:
-    data = json.loads(payload or "{}")
+    json_start = payload.find("{")
+    data = json.loads(payload[json_start:] if json_start >= 0 else "{}")
     findings: list[Finding] = []
     for index, item in enumerate(data.get("results") or [], start=1):
         extra = item.get("extra") or {}
@@ -184,8 +202,16 @@ def _run_bandit(tool: SecurityTool, call: ValidatedToolCall, root: Path, files: 
 
 def _run_semgrep(tool: SecurityTool, call: ValidatedToolCall, root: Path, files: list[dict[str, Any]], mode: str) -> ToolRunResult:
     targets = _absolute_targets(root, call.target_files)
-    argv = [tool.executable or "semgrep", "scan", "--json", "--quiet", "--config", str(SEMGREP_CONFIG), *targets]
-    output = run_fixed_command(argv, root, call.timeout_seconds)
+    core = _windows_semgrep_core()
+    if core:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            targets_path = Path(temp_dir) / "targets.json"
+            targets_path.write_text(json.dumps(_semgrep_core_targets(root, call.target_files)), encoding="utf-8")
+            argv = [str(core), "-json", "-rules", str(SEMGREP_CONFIG), "-targets", str(targets_path), "-j", "1", "-timeout", "10", "-timeout_threshold", "3"]
+            output = run_fixed_command(argv, root, call.timeout_seconds)
+    else:
+        argv = [tool.executable or "semgrep", "scan", "--json", "--quiet", "--config", str(SEMGREP_CONFIG), *targets]
+        output = run_fixed_command(argv, root, call.timeout_seconds)
     return _external_result(tool, call, output, parse_semgrep_json, root, files, mode, {0})
 
 
@@ -208,7 +234,7 @@ def _run_gitleaks(tool: SecurityTool, call: ValidatedToolCall, root: Path, files
         return _timeout(tool, call, output)
     if output.returncode not in {0, 1}:
         return _command_error(tool, call, output)
-    findings = _filter_diff_findings(parse_gitleaks_json(payload, root), files, mode)
+    findings = _filter_stage_findings(_filter_diff_findings(parse_gitleaks_json(payload, root), files, mode), call.stage)
     return ToolRunResult(
         call_id=call.call_id,
         tool_name=tool.name,
@@ -227,7 +253,7 @@ def _external_result(tool: SecurityTool, call: ValidatedToolCall, output: Comman
     if output.returncode not in valid_codes:
         return _command_error(tool, call, output)
     try:
-        findings = _filter_diff_findings(parser(output.stdout, root), files, mode)
+        findings = _filter_stage_findings(_filter_diff_findings(parser(output.stdout, root), files, mode), call.stage)
     except (json.JSONDecodeError, TypeError, ValueError) as exc:
         return ToolRunResult(
             call_id=call.call_id,
@@ -256,7 +282,8 @@ def _builtin_findings(files: list[dict[str, Any]], source: str) -> list[Finding]
 
 
 def _success(call: ValidatedToolCall, findings: list[Finding], started: float, summary: str) -> ToolRunResult:
-    return ToolRunResult(call_id=call.call_id, tool_name=call.tool_name, stage=call.stage, status="success", findings=findings, duration_ms=_elapsed_ms(started), output_summary=summary)
+    filtered = _filter_stage_findings(findings, call.stage)
+    return ToolRunResult(call_id=call.call_id, tool_name=call.tool_name, stage=call.stage, status="success", findings=filtered, duration_ms=_elapsed_ms(started), output_summary=summary)
 
 
 def _skipped(call: ValidatedToolCall, started: float, reason: str) -> ToolRunResult:
@@ -313,6 +340,20 @@ def _filter_diff_findings(findings: list[Finding], files: list[dict[str, Any]], 
     return [item for item in findings if not changed.get(item.file_path) or item.line_start in changed[item.file_path]]
 
 
+def _filter_stage_findings(findings: list[Finding], stage: Any) -> list[Finding]:
+    if stage is None:
+        return findings
+    allowed = {
+        "secret": {"Secrets"},
+        "injection": {"SQL Injection"},
+        "command": {"Command Execution"},
+        "file": {"Path Traversal", "Unsafe Deserialization"},
+        "auth": {"Broken Access Control"},
+    }
+    stage_name = str(getattr(stage, "value", stage))
+    return [finding for finding in findings if finding.category in allowed.get(stage_name, set())]
+
+
 def _risk_type(text: str) -> str:
     value = text.lower()
     if any(marker in value for marker in ("sql", "query", "injection")):
@@ -349,3 +390,61 @@ def _safe_error(stderr: str) -> str:
 
 def _elapsed_ms(started: float) -> int:
     return max(0, int((time.monotonic() - started) * 1000))
+
+
+def _windows_semgrep_core() -> Path | None:
+    if os.name != "nt":
+        return None
+    spec = importlib.util.find_spec("semgrep")
+    if spec is None or spec.origin is None:
+        return None
+    core = Path(spec.origin).resolve().parent / "bin" / "semgrep-core.exe"
+    return core if core.is_file() else None
+
+
+def _semgrep_core_targets(root: Path, targets: list[str]) -> list[Any]:
+    suffix_languages = {".py": "python", ".java": "java"}
+    items = []
+    for target in targets:
+        path = (root / target).resolve()
+        language = suffix_languages.get(path.suffix.lower())
+        if language and path.is_file():
+            project_path = "/" + target.replace("\\", "/").lstrip("/")
+            items.append(
+                [
+                    "CodeTarget",
+                    {
+                        "path": {"fpath": str(path), "ppath": project_path},
+                        "analyzer": language,
+                        "products": ["sast"],
+                    },
+                ]
+            )
+    return ["Targets", items]
+
+
+def _terminate_process_tree(process: subprocess.Popen[Any]) -> None:
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            shell=False,
+            timeout=5,
+        )
+    else:
+        process.kill()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+
+
+def _redact_context(text: str) -> str:
+    return re.sub(
+        r"(?i)(\b(?:api[_-]?key|token|password|passwd|private[_-]?key|secret)\b\s*[:=]\s*)(['\"]?)[^\s,'\"]+\2",
+        r"\1<redacted>",
+        text,
+    )

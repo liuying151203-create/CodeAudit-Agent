@@ -8,7 +8,7 @@ from app.schemas import AuditBudget, AuditPlan, AuditStageName, AuditStagePlan, 
 from app.schemas.execution import ToolRunResult, ValidatedToolCall
 from app.schemas.finding import Finding
 from app.schemas.project import SecurityTool
-from app.security_tools.adapters import CommandOutput, execute_adapter, parse_bandit_json, parse_gitleaks_json, parse_semgrep_json
+from app.security_tools.adapters import CommandOutput, _semgrep_core_targets, execute_adapter, parse_bandit_json, parse_gitleaks_json, parse_semgrep_json
 from app.security_tools.gateway import execute_tool_plan, select_tool_plan
 from app.security_tools.registry import load_security_tools, mcp_tool_to_security_tool
 
@@ -88,7 +88,7 @@ class ToolGatewayTests(unittest.TestCase):
             root,
         )
         semgrep = parse_semgrep_json(
-            json.dumps(
+            ".\r\n" + json.dumps(
                 {
                     "results": [
                         {
@@ -113,8 +113,18 @@ class ToolGatewayTests(unittest.TestCase):
         self.assertEqual(gitleaks[0].evidence_text, "<redacted secret evidence>")
         self.assertNotIn("must-not-leak", gitleaks[0].model_dump_json())
 
+    def test_semgrep_core_targets_use_absolute_project_paths(self):
+        root = Path(".").resolve()
+        payload = _semgrep_core_targets(root, ["app/agent/graph.py"])
+
+        target = payload[1][0][1]
+        self.assertTrue(Path(target["path"]["fpath"]).is_absolute())
+        self.assertEqual(target["path"]["ppath"], "/app/agent/graph.py")
+        self.assertEqual(target["analyzer"], "python")
+
+    @patch("app.security_tools.adapters._windows_semgrep_core", return_value=None)
     @patch("app.security_tools.adapters.run_fixed_command")
-    def test_semgrep_adapter_uses_fixed_command_and_filters_diff_lines(self, command):
+    def test_semgrep_adapter_uses_fixed_command_and_filters_diff_lines(self, command, _core):
         command.return_value = CommandOutput(
             returncode=0,
             stdout=json.dumps(

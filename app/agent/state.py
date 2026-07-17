@@ -5,11 +5,11 @@ from typing import Any, TypedDict, cast
 
 from app.schemas.evidence import Evidence
 from app.schemas.execution import ToolRequest, ToolRunResult, ValidatedToolCall
-from app.schemas.finding import Finding, FixSuggestion, ReviewResult, RiskAnalysis
+from app.schemas.finding import Finding, FindingDraft, FixSuggestion, ReviewResult, RiskAnalysis
 from app.schemas.planning import AuditPlan, AuditStagePlan
 from app.schemas.project import AuditStageResult, ProjectProfile, ToolPlan, VulnKnowledge
 from app.schemas.report import AgentTrace, AuditReport
-from app.schemas.runtime import AuditBudget, AuditError, AuditHypothesis, AuditMetrics, FallbackRecord
+from app.schemas.runtime import AuditBudget, AuditDecision, AuditError, AuditHypothesis, AuditLoopRuntime, AuditMetrics, FallbackRecord
 
 
 class RequestSection(TypedDict, total=False):
@@ -41,6 +41,11 @@ class ExecutionSection(TypedDict, total=False):
     tool_results: list[ToolRunResult]
     evidence_pool: list[Evidence]
     audit_hypotheses: list[AuditHypothesis]
+    pending_tool_requests: list[ToolRequest]
+    current_tool_plan: ToolPlan | None
+    round_tool_results: list[ToolRunResult]
+    audit_decision: AuditDecision | None
+    pending_finding: FindingDraft | None
 
 
 class FindingSection(TypedDict, total=False):
@@ -58,6 +63,7 @@ class RuntimeSection(TypedDict, total=False):
     fallbacks: list[FallbackRecord]
     errors: list[AuditError | str]
     traces: list[AgentTrace]
+    loop: AuditLoopRuntime
 
 
 class AuditState(TypedDict, total=False):
@@ -83,8 +89,13 @@ class AuditState(TypedDict, total=False):
     current_stage: AuditStagePlan | None
     tool_plan: ToolPlan | None
     tool_requests: list[ToolRequest]
+    pending_tool_requests: list[ToolRequest]
     validated_tool_calls: list[ValidatedToolCall]
     tool_results: list[ToolRunResult]
+    current_tool_plan: ToolPlan | None
+    round_tool_results: list[ToolRunResult]
+    audit_decision: AuditDecision | None
+    pending_finding: FindingDraft | None
     audit_stage_results: list[AuditStageResult]
     audit_hypotheses: list[AuditHypothesis]
     candidate_findings: list[Finding]
@@ -96,6 +107,7 @@ class AuditState(TypedDict, total=False):
     fix_suggestions: list[FixSuggestion]
     budget: AuditBudget
     metrics: AuditMetrics
+    loop_runtime: AuditLoopRuntime
     fallbacks: list[FallbackRecord]
     final_report: AuditReport
     traces: list[AgentTrace]
@@ -138,8 +150,13 @@ def normalize_audit_state(initial_state: AuditState | dict[str, Any]) -> AuditSt
         execution,
         {
             "tool_requests": "tool_requests",
+            "pending_tool_requests": "pending_tool_requests",
             "validated_tool_calls": "validated_tool_calls",
             "tool_results": "tool_results",
+            "current_tool_plan": "current_tool_plan",
+            "round_tool_results": "round_tool_results",
+            "audit_decision": "audit_decision",
+            "pending_finding": "pending_finding",
             "evidences": "evidence_pool",
             "audit_hypotheses": "audit_hypotheses",
         },
@@ -167,6 +184,7 @@ def normalize_audit_state(initial_state: AuditState | dict[str, Any]) -> AuditSt
             "fallbacks": "fallbacks",
             "errors": "errors",
             "traces": "traces",
+            "loop_runtime": "loop",
         },
     )
 
@@ -175,8 +193,10 @@ def normalize_audit_state(initial_state: AuditState | dict[str, Any]) -> AuditSt
     state.setdefault("vuln_knowledge", [])
     state.setdefault("stage_queue", [])
     state.setdefault("tool_requests", [])
+    state.setdefault("pending_tool_requests", [])
     state.setdefault("validated_tool_calls", [])
     state.setdefault("tool_results", [])
+    state.setdefault("round_tool_results", [])
     state.setdefault("audit_stage_results", [])
     state.setdefault("audit_hypotheses", [])
     state.setdefault("candidate_findings", [])
@@ -195,9 +215,14 @@ def normalize_audit_state(initial_state: AuditState | dict[str, Any]) -> AuditSt
     state["stage_queue"] = _coerce_model_list(state.get("stage_queue", []), AuditStagePlan)
     state["current_stage"] = _coerce_optional_model(state.get("current_stage"), AuditStagePlan)
     state["tool_plan"] = _coerce_optional_model(state.get("tool_plan"), ToolPlan)
+    state["current_tool_plan"] = _coerce_optional_model(state.get("current_tool_plan"), ToolPlan)
     state["tool_requests"] = _coerce_model_list(state.get("tool_requests", []), ToolRequest)
+    state["pending_tool_requests"] = _coerce_model_list(state.get("pending_tool_requests", []), ToolRequest)
     state["validated_tool_calls"] = _coerce_model_list(state.get("validated_tool_calls", []), ValidatedToolCall)
     state["tool_results"] = _coerce_model_list(state.get("tool_results", []), ToolRunResult)
+    state["round_tool_results"] = _coerce_model_list(state.get("round_tool_results", []), ToolRunResult)
+    state["audit_decision"] = _coerce_optional_model(state.get("audit_decision"), AuditDecision)
+    state["pending_finding"] = _coerce_optional_model(state.get("pending_finding"), FindingDraft)
     state["audit_stage_results"] = _coerce_model_list(state.get("audit_stage_results", []), AuditStageResult)
     state["audit_hypotheses"] = _coerce_model_list(state.get("audit_hypotheses", []), AuditHypothesis)
     state["candidate_findings"] = _coerce_model_list(state.get("candidate_findings", []), Finding)
@@ -211,6 +236,7 @@ def normalize_audit_state(initial_state: AuditState | dict[str, Any]) -> AuditSt
     state["traces"] = _coerce_model_list(state.get("traces", []), AgentTrace)
     state["budget"] = _coerce_model(state.get("budget"), AuditBudget)
     state["metrics"] = _coerce_model(state.get("metrics"), AuditMetrics)
+    state["loop_runtime"] = _coerce_model(state.get("loop_runtime"), AuditLoopRuntime)
     return sync_audit_state(state)
 
 
@@ -254,8 +280,13 @@ def sync_audit_state(state: AuditState) -> AuditState:
     execution.update(
         {
             "tool_requests": state.get("tool_requests", []),
+            "pending_tool_requests": state.get("pending_tool_requests", []),
             "validated_tool_calls": state.get("validated_tool_calls", []),
             "tool_results": state.get("tool_results", []),
+            "current_tool_plan": state.get("current_tool_plan"),
+            "round_tool_results": state.get("round_tool_results", []),
+            "audit_decision": state.get("audit_decision"),
+            "pending_finding": state.get("pending_finding"),
             "evidence_pool": state.get("evidences", []),
             "audit_hypotheses": state.get("audit_hypotheses", []),
         }
@@ -283,10 +314,12 @@ def sync_audit_state(state: AuditState) -> AuditState:
             "fallbacks": state.get("fallbacks", []),
             "errors": state.get("errors", []),
             "traces": state.get("traces", []),
+            "loop": _coerce_model(state.get("loop_runtime") or runtime.get("loop"), AuditLoopRuntime),
         }
     )
     state["budget"] = runtime["budget"]
     state["metrics"] = runtime["metrics"]
+    state["loop_runtime"] = runtime["loop"]
     state["runtime"] = cast(RuntimeSection, runtime)
     return state
 
