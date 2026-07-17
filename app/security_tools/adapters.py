@@ -194,15 +194,13 @@ def _run_gitleaks(tool: SecurityTool, call: ValidatedToolCall, root: Path, files
         report_path = Path(temp_dir) / "gitleaks.json"
         argv = [
             tool.executable or "gitleaks",
-            "detect",
-            "--no-git",
+            "dir",
             "--no-banner",
-            "--source",
-            str(root),
             "--report-format",
             "json",
             "--report-path",
             str(report_path),
+            str(root),
         ]
         output = run_fixed_command(argv, root, call.timeout_seconds)
         payload = report_path.read_text(encoding="utf-8", errors="ignore")[:MAX_OUTPUT_BYTES] if report_path.exists() else "[]"

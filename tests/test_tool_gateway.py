@@ -156,6 +156,19 @@ class ToolGatewayTests(unittest.TestCase):
         self.assertEqual(argv[0:2], ["semgrep", "scan"])
         self.assertNotIn("powershell -c malicious", argv)
 
+    @patch("app.security_tools.adapters.run_fixed_command")
+    def test_gitleaks_adapter_uses_current_directory_command(self, command):
+        command.return_value = CommandOutput(returncode=0, stdout="", stderr="", duration_ms=10)
+        tool = SecurityTool(name="gitleaks", adapter="gitleaks_json", executable="gitleaks", read_only=True)
+        call = ValidatedToolCall(call_id="call-2", tool_name="gitleaks")
+
+        result = execute_adapter(tool, call, self.files, Path(".").resolve(), "repo_scan")
+        argv = command.call_args.args[0]
+
+        self.assertEqual(argv[0:2], ["gitleaks", "dir"])
+        self.assertNotIn("detect", argv)
+        self.assertEqual(result.status, "success")
+
     def test_merger_retains_multiple_tool_sources(self):
         first = Finding(
             finding_id="one",
