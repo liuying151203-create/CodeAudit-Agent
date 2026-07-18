@@ -16,12 +16,9 @@
 - LLM 批量风险分析、误报复核和修复建议。
 - LLM 未配置或调用失败时的模板降级。
 - Markdown、JSON、SARIF 报告和基础 Agent trace。
-- FastAPI 接口和 Streamlit 演示页面。
+- FastAPI 接口和基于 LangGraph 事件流的 Streamlit 审计工作台。
 
-当前实现与目标设计的主要差距：
-
-- Streamlit 只能在审计完成后集中展示结果，尚未消费 LangGraph 事件流。
-- GitHub Action、PR Comment 和 MCP Adapter 尚未完成集成。
+当前实现与目标设计的主要差距是 GitHub Action、PR Comment 和 MCP Adapter 尚未完成集成。
 
 ## 2. 实施原则
 
@@ -134,6 +131,8 @@
 - Secret 原值不会出现在 LLM prompt、trace 和报告中。
 
 ## 8. 阶段六：Streamlit Demo
+
+状态：已完成（2026-07-18）。
 
 ### 开发内容
 

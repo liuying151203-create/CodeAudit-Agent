@@ -114,3 +114,15 @@ class AuditLoopRuntime(BaseModel):
     termination_reason: str | None = None
     fallback_reasons: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
+
+
+class AuditProgressEvent(BaseModel):
+    sequence: int = Field(default=0, ge=0)
+    node_name: str
+    phase: str = Field(pattern="^(understanding|planning|auditing|review|reporting)$")
+    stage: AuditStageName | None = None
+    progress: float = Field(default=0.0, ge=0, le=1)
+    message: str = ""
+    tool_names: list[str] = Field(default_factory=list)
+    decision: str | None = None
+    status: str = Field(default="running", pattern="^(running|completed|warning|error)$")

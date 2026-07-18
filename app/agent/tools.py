@@ -515,7 +515,7 @@ def _template_finding_assessment(
         if placeholder:
             status = FindingStatus.DISMISSED
             reason = "Evidence indicates example or placeholder secret data."
-        elif not evidence_ids or finding.confidence < 0.55:
+        elif not evidence_ids:
             status = FindingStatus.NEEDS_REVIEW
             reason = "Available evidence is insufficient for deterministic confirmation."
         else:

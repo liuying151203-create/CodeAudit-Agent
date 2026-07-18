@@ -2,7 +2,7 @@
 
 CodeAudit-Agent 是一个基于 LangGraph 的源码安全审计与 Git diff 风险分析 Agent。系统先理解项目结构和风险面，再结合漏洞知识库规划审计阶段，通过统一工具网关执行内置规则或外部安全工具，并由 LLM 围绕真实代码证据主动补充审计、复核风险和生成修复建议。
 
-项目提供 FastAPI 接口、Streamlit 演示页面，以及 Markdown、JSON 等结构化审计结果。
+项目提供 FastAPI 接口、Streamlit 演示页面，以及 Markdown、JSON、SARIF 结构化审计结果。
 
 ## 核心能力
 

@@ -34,6 +34,8 @@ def _response(state: dict):
         "audit_stage_results": [item.model_dump() for item in report.audit_stage_results],
         "evidences": [item.model_dump() for item in report.evidences],
         "findings": [finding.model_dump() for finding in report.findings],
+        "dismissed_findings": [finding.model_dump() for finding in report.dismissed_findings],
+        "needs_review_findings": [finding.model_dump() for finding in report.needs_review_findings],
         "risk_analyses": [item.model_dump() for item in report.risk_analyses],
         "review_results": [item.model_dump() for item in report.review_results],
         "fix_suggestions": [item.model_dump() for item in report.fix_suggestions],
@@ -45,6 +47,7 @@ def _response(state: dict):
         "traces": [trace.model_dump() for trace in report.traces],
         "markdown_path": report.markdown_path,
         "json_path": report.json_path,
+        "sarif_path": report.sarif_path,
     }
 
 
