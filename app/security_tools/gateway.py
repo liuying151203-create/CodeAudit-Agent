@@ -12,7 +12,7 @@ from app.schemas.planning import AuditPlan
 from app.schemas.project import ProjectProfile, SecurityTool, ToolPlan, VulnKnowledge
 from app.schemas.runtime import AuditBudget
 from app.security_tools.adapters import execute_adapter
-from app.security_tools.registry import load_security_tools
+from app.security_tools.registry import get_mcp_discovery_errors, load_security_tools
 
 ENABLED_ADAPTERS = {
     "bandit_json",
@@ -20,9 +20,10 @@ ENABLED_ADAPTERS = {
     "builtin_secret",
     "context_extractor",
     "gitleaks_json",
+    "mcp",
     "semgrep_json",
 }
-EXTERNAL_ADAPTERS = {"bandit_json", "gitleaks_json", "semgrep_json"}
+EXTERNAL_ADAPTERS = {"bandit_json", "gitleaks_json", "mcp", "semgrep_json"}
 FALLBACK_TOOLS = {
     "bandit": "custom_rule_scanner",
     "gitleaks": "secret_scanner",
@@ -41,7 +42,8 @@ def select_tool_plan(
     registry: list[SecurityTool] | None = None,
     strict_capabilities: bool = False,
 ) -> ToolPlan:
-    tools = registry or load_security_tools()
+    registry_provided = registry is not None
+    tools = registry if registry is not None else load_security_tools()
     budget = budget or AuditBudget()
     available_paths = sorted({_normalize_path(item.get("path")) for item in files if _normalize_path(item.get("path"))})
     planned_targets = sorted({path for stage in (audit_plan.stages if audit_plan else []) for path in stage.target_files})
@@ -54,6 +56,9 @@ def select_tool_plan(
     unavailable: list[str] = []
     reasons: list[str] = []
     fallback_reasons: list[str] = []
+    if not registry_provided:
+        for error in get_mcp_discovery_errors():
+            fallback_reasons.append(f"MCP discovery failed; registered builtin tools remain available. {error}")
     for tool in tools:
         if scan_mode not in tool.supported_modes or not tool.read_only:
             continue
@@ -89,10 +94,18 @@ def select_tool_plan(
         reasons.append(f"{tool.name} provides {', '.join(sorted(set(tool.capabilities) & capabilities)) or 'matching risk coverage'}.")
 
     selected = _ensure_builtin_fallbacks(selected, tools, profile, risk_types, capabilities, strict_capabilities)
-    adapter_priority = {"builtin_rules": 1, "builtin_secret": 1, "context_extractor": 2}
+    adapter_priority = {
+        "bandit_json": 0,
+        "gitleaks_json": 0,
+        "mcp": 0,
+        "semgrep_json": 0,
+        "builtin_rules": 1,
+        "builtin_secret": 1,
+        "context_extractor": 2,
+    }
     selected.sort(
         key=lambda tool: (
-            0 if tool.requires_install else adapter_priority.get(tool.adapter or "", 1),
+            adapter_priority.get(tool.adapter or "", 1),
             -len(capabilities & set(tool.capabilities)),
             tool.name,
         )
@@ -110,7 +123,7 @@ def select_tool_plan(
                     timeout_seconds=tool.timeout_seconds,
                     target_files=batch,
                     selection_reason=f"Validated read-only adapter {tool.adapter} for {scan_mode}.",
-                    fallback_tool=FALLBACK_TOOLS.get(tool.name),
+                    fallback_tool=_fallback_tool(tool),
                     stage=_stage_for_tool(tool, audit_plan),
                 )
             )
@@ -232,6 +245,18 @@ def _stage_for_tool(tool: SecurityTool, audit_plan: AuditPlan | None) -> AuditSt
     for stage in audit_plan.stages if audit_plan else []:
         if set(stage.required_capabilities) & set(tool.capabilities) or _intersects(stage.risk_types, tool.risk_types):
             return stage.stage
+    return None
+
+
+def _fallback_tool(tool: SecurityTool) -> str | None:
+    if tool.name in FALLBACK_TOOLS:
+        return FALLBACK_TOOLS[tool.name]
+    if tool.adapter == "mcp":
+        if "scan_secrets" in tool.capabilities:
+            return "secret_scanner"
+        if any(capability.startswith("extract_") for capability in tool.capabilities):
+            return "context_extractor"
+        return "custom_rule_scanner"
     return None
 
 

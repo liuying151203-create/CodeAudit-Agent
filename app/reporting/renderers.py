@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 from app.agent.prompt_context import DEFAULT_SANITIZER
@@ -106,6 +107,18 @@ def render_markdown(report: AuditReport) -> str:
     if report.fallback_reasons:
         lines.extend(["", "## Fallback Reasons"])
         lines.extend(f"- {reason}" for reason in report.fallback_reasons)
+    lines.extend(
+        [
+            "",
+            "## Integration Metrics",
+            f"- Tool calls: {report.metrics.tool_call_count}",
+            f"- LLM calls: {report.metrics.llm_call_count}",
+            f"- SARIF results: {report.metrics.sarif_result_count}",
+            f"- Report bytes: {report.metrics.report_file_bytes}",
+            f"- Retained reports: {report.metrics.retained_report_count}",
+            f"- Pruned reports: {report.metrics.pruned_report_count}",
+        ]
+    )
     lines.extend(["", "## Findings"])
     if not report.findings:
         lines.append("- No evidence-backed active findings.")
@@ -198,6 +211,11 @@ def build_sarif(report: AuditReport) -> dict[str, Any]:
                         }
                     }
                 ],
+                "partialFingerprints": {
+                    "codeaudit/v1": hashlib.sha256(
+                        f"{finding.rule_id}:{finding.file_path}:{finding.category}:{finding.evidence_text}".encode("utf-8")
+                    ).hexdigest()
+                },
                 "properties": {
                     "finding_id": finding.finding_id,
                     "risk_type": finding.risk_type or finding.category,
@@ -216,7 +234,14 @@ def build_sarif(report: AuditReport) -> dict[str, Any]:
         "version": "2.1.0",
         "runs": [
             {
-                "tool": {"driver": {"name": "CodeAudit-Agent", "rules": list(rules.values())}},
+                "tool": {
+                    "driver": {
+                        "name": "CodeAudit-Agent",
+                        "semanticVersion": "0.1.0",
+                        "informationUri": "https://github.com/liuying151203-create/CodeAudit-Agent",
+                        "rules": list(rules.values()),
+                    }
+                },
                 "results": results,
             }
         ],

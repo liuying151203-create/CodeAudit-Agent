@@ -176,7 +176,9 @@ class FindingQualityTests(unittest.TestCase):
         for content in (markdown, json_text, sarif_text):
             self.assertNotIn("ProdPassword123!", content)
         sarif = json.loads(sarif_text)
+        report_payload = json.loads(json_text)
         self.assertEqual(sarif["version"], "2.1.0")
+        self.assertEqual(report_payload["report_id"], report.report_id)
         self.assertEqual(len(report.findings), 4)
         self.assertTrue(all(item.evidence_ids for item in report.findings))
         self.assertTrue(all(source.tool_call_id for item in report.findings for source in item.provenance))

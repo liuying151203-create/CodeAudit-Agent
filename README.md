@@ -138,19 +138,25 @@ diff 报告区分：
 
 ```text
 app/
+  cli.py            本地与 CI 命令入口
   agent/            LangGraph 状态、节点、图和 Agent 工具
   api/              FastAPI 扫描与报告接口
   context/          源码上下文和证据提取
   diff/             Git diff 读取与解析
+  integrations/     GitHub PR 摘要等平台集成
   scanners/         Python/Java 内置安全规则
   security_tools/   工具注册、选择、执行和外部适配器
   reporting/        Markdown、JSON 与 SARIF 报告渲染
   schemas/          Pydantic 结构化模型
-  storage/          报告存储
+  storage/          报告存储与保留策略
   utils/            文件过滤和 trace
 
 config/
   security_tools.yaml
+  mcp_servers.json
+
+.github/workflows/
+  codeaudit.yml     Code Scanning 与 PR 审计
 
 knowledge_base/     本地漏洞知识库
 frontend/           Streamlit 演示页面
@@ -232,6 +238,30 @@ http://127.0.0.1:8000
 http://127.0.0.1:8000/docs
 ```
 
+### 5. 命令行与 CI
+
+仓库扫描和 diff 扫描可以直接从命令行运行：
+
+```powershell
+python -m app.cli repo --repo-path . --metadata-file data/reports/latest.json
+python -m app.cli diff --repo-path . --diff-file change.diff
+python -m app.cli validate-sarif data/reports/<report_id>.sarif
+```
+
+`.github/workflows/codeaudit.yml` 在 push 时执行 `repo_scan`，在 Pull Request 时先运行真实 `git diff` 再执行 `diff_scan`。工作流会校验并上传 SARIF、保存完整报告，并在同仓库 PR 下更新一条脱敏摘要评论。fork PR 使用只读权限运行，不回写评论。
+
+### 6. 接入 MCP 工具
+
+MCP Adapter 支持 MCP 2025-11-25 stdio 工具服务器。复制 `config/mcp_servers.example.json` 中的配置，填写固定启动命令、允许透传的环境变量和 `allowed_tools` 白名单，再写入 `config/mcp_servers.json`。
+
+MCP 工具需要在 `tools/list` 描述中声明：
+
+- `annotations.readOnlyHint: true`，且不能声明破坏性行为。
+- `inputSchema`，用于构造固定的 `mode`、`repo_path`、`target_files`、`risk_types` 或脱敏 `files` 参数。
+- `_meta["io.codeaudit/tool"]`，用于声明语言、风险类型、能力和扫描模式。
+
+发现后的工具会被映射为内部 `SecurityTool`，继续经过 Tool Selector、Tool Executor、目标路径校验、AuditBudget 和 fallback。系统不会把 LLM 生成的任意参数或 shell command 直接转发给 MCP Server。
+
 ## API 示例
 
 ### 扫描本地仓库
@@ -296,6 +326,14 @@ data/reports/
   <report_id>.md
   <report_id>.json
   <report_id>.sarif
+```
+
+默认保留最近 100 份且不超过 30 天的报告，可通过以下变量调整：
+
+```env
+CODEAUDIT_REPORT_RETENTION_ENABLED=true
+CODEAUDIT_REPORT_MAX_COUNT=100
+CODEAUDIT_REPORT_MAX_AGE_DAYS=30
 ```
 
 报告包含：

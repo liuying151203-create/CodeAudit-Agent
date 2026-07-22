@@ -1,0 +1,127 @@
+name: CodeAudit
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      scan_mode:
+        description: Audit scope
+        type: choice
+        options: [repo_scan, diff_scan]
+        default: repo_scan
+
+permissions:
+  actions: read
+  contents: read
+  security-events: write
+  issues: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CODEAUDIT_REPORT_DIR: codeaudit-output
+      LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+      LLM_BASE_URL: ${{ secrets.LLM_BASE_URL || 'https://api.openai.com/v1' }}
+      LLM_MODEL: ${{ vars.LLM_MODEL || 'gpt-4o-mini' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install CodeAudit-Agent
+        run: python -m pip install -r requirements.txt
+
+      - name: Install optional scanners
+        continue-on-error: true
+        run: python -m pip install bandit semgrep
+
+      - name: Run audit
+        id: audit
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MANUAL_MODE: ${{ inputs.scan_mode }}
+        run: |
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            git diff --unified=20 "$BASE_SHA" "$HEAD_SHA" > "$RUNNER_TEMP/codeaudit.diff"
+            python -m app.cli diff --repo-path . --diff-file "$RUNNER_TEMP/codeaudit.diff" --metadata-file codeaudit-output/latest.json
+          elif [[ "$EVENT_NAME" == "workflow_dispatch" && "$MANUAL_MODE" == "diff_scan" ]]; then
+            if git rev-parse --verify HEAD~1 >/dev/null 2>&1; then
+              git diff --unified=20 HEAD~1 HEAD > "$RUNNER_TEMP/codeaudit.diff"
+              python -m app.cli diff --repo-path . --diff-file "$RUNNER_TEMP/codeaudit.diff" --metadata-file codeaudit-output/latest.json
+            else
+              python -m app.cli repo --repo-path . --metadata-file codeaudit-output/latest.json
+            fi
+          else
+            python -m app.cli repo --repo-path . --metadata-file codeaudit-output/latest.json
+          fi
+
+      - name: Validate SARIF
+        run: python -m app.cli validate-sarif "${{ steps.audit.outputs.sarif_path }}"
+
+      - name: Upload SARIF to Code Scanning
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: ${{ steps.audit.outputs.sarif_path }}
+          category: codeaudit-agent
+
+      - name: Build pull request summary
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        run: python -m app.cli pr-comment "${{ steps.audit.outputs.json_path }}" --output codeaudit-output/pr-comment.md
+
+      - name: Publish pull request summary
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/github-script@v8
+        env:
+          COMMENT_FILE: codeaudit-output/pr-comment.md
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- codeaudit-agent -->';
+            const body = fs.readFileSync(process.env.COMMENT_FILE, 'utf8');
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100
+            });
+            const previous = comments.find(comment => comment.user?.login === 'github-actions[bot]' && comment.body?.includes(marker));
+            if (previous) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: previous.id,
+                body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body
+              });
+            }
+
+      - name: Upload audit reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: codeaudit-report-${{ github.run_id }}
+          path: codeaudit-output/
+          if-no-files-found: error
+          retention-days: 14

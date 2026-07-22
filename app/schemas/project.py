@@ -52,6 +52,9 @@ class SecurityTool(BaseModel):
     read_only: bool = True
     timeout_seconds: int = Field(default=30, ge=1, le=600)
     description: str = ""
+    mcp_server: str | None = None
+    mcp_tool_name: str | None = None
+    input_schema: dict[str, Any] = Field(default_factory=dict)
 
 
 class ToolPlan(BaseModel):

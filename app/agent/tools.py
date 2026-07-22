@@ -405,9 +405,33 @@ class ReportWriterTool(BaseTool):
             sarif_path=str(sarif_path),
         )
         report = AuditReport.model_validate(DEFAULT_SANITIZER.sanitize_value(report.model_dump(mode="json")))
+        sarif = build_sarif(report)
+        from app.reporting.sarif import assert_valid_sarif
+        from app.storage.retention import prune_reports
+
+        assert_valid_sarif(sarif)
         markdown_path.write_text(render_markdown(report), encoding="utf-8")
         json_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
-        sarif_path.write_text(json.dumps(build_sarif(report), ensure_ascii=False, indent=2), encoding="utf-8")
+        sarif_path.write_text(json.dumps(sarif, ensure_ascii=False, indent=2), encoding="utf-8")
+        retention = prune_reports(report_dir, protected_report_ids={report_id})
+        metrics = metrics.model_copy(
+            update={
+                "sarif_result_count": len(sarif["runs"][0]["results"]),
+                "retained_report_count": retention.retained_reports,
+                "pruned_report_count": retention.pruned_reports,
+            }
+        )
+        for _ in range(3):
+            report = report.model_copy(update={"metrics": metrics})
+            markdown_path.write_text(render_markdown(report), encoding="utf-8")
+            json_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+            report_bytes = sum(path.stat().st_size for path in (markdown_path, json_path, sarif_path))
+            if report_bytes == metrics.report_file_bytes:
+                break
+            metrics = metrics.model_copy(update={"report_file_bytes": report_bytes})
+        report = report.model_copy(update={"metrics": metrics})
+        state["metrics"] = metrics
+        json_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
         return report
 
 

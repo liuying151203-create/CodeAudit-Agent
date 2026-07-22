@@ -15,6 +15,7 @@ from app.scanners.builtin_rules import scan_files
 from app.schemas.execution import ToolObservation, ToolRunResult, ValidatedToolCall
 from app.schemas.finding import Finding
 from app.schemas.project import SecurityTool
+from app.security_tools.mcp import execute_mcp_tool
 
 MAX_OUTPUT_BYTES = 2_000_000
 SEMGREP_CONFIG = Path(__file__).resolve().parents[2] / "config" / "semgrep_rules.json"
@@ -65,6 +66,11 @@ def execute_adapter(
                 )
             result = _success(call, [], started, f"{len(observations)} context observations")
             return result.model_copy(update={"observations": observations})
+        if tool.adapter == "mcp":
+            result = execute_mcp_tool(tool, call, files, repo_root, mode)
+            remapped = _remap_inline_diff_findings(result.findings, files, mode)
+            findings = _filter_stage_findings(_filter_diff_findings(remapped, files, mode), call.stage)
+            return result.model_copy(update={"findings": findings, "duration_ms": _elapsed_ms(started)})
         if repo_root is None:
             return _skipped(call, started, "External tools require a validated repository path.")
         if tool.adapter == "bandit_json":
@@ -75,13 +81,14 @@ def execute_adapter(
             return _run_gitleaks(tool, call, repo_root, files, mode)
         return _skipped(call, started, f"Adapter is not enabled: {tool.adapter}")
     except Exception as exc:
+        error_message = DEFAULT_SANITIZER.redact_text(f"{type(exc).__name__}: {exc}")[:2000]
         return ToolRunResult(
             call_id=call.call_id,
             tool_name=tool.name,
             stage=call.stage,
             status="error",
             duration_ms=_elapsed_ms(started),
-            error_message=f"{type(exc).__name__}: {exc}",
+            error_message=error_message,
             output_summary="Tool adapter failed.",
         )
 
@@ -405,7 +412,8 @@ def _read_bounded(file_obj: Any) -> tuple[str, bool]:
 
 
 def _safe_error(stderr: str) -> str:
-    return (stderr.strip() or "External tool failed without an error message.")[:2000]
+    message = stderr.strip() or "External tool failed without an error message."
+    return DEFAULT_SANITIZER.redact_text(message)[:2000]
 
 
 def _elapsed_ms(started: float) -> int:

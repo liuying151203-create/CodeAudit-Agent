@@ -1,17 +1,20 @@
 from __future__ import annotations
 
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 from app.schemas.project import SecurityTool
+from app.security_tools.mcp import discover_mcp_security_tools, resolve_mcp_config_path
 
 DEFAULT_REGISTRY_PATH = Path(__file__).resolve().parents[2] / "config" / "security_tools.yaml"
+_last_mcp_discovery_errors: list[str] = []
 
 
-def load_security_tools(path: Path | None = None) -> list[SecurityTool]:
+def load_security_tools(path: Path | None = None, mcp_path: Path | None = None) -> list[SecurityTool]:
     registry_path = path or DEFAULT_REGISTRY_PATH
     if not registry_path.exists():
-        return [
+        tools = [
             SecurityTool(
                 name="custom_rule_scanner",
                 adapter="builtin_rules",
@@ -21,7 +24,28 @@ def load_security_tools(path: Path | None = None) -> list[SecurityTool]:
                 supported_modes=["repo_scan", "diff_scan"],
             )
         ]
-    return parse_security_tools_yaml(registry_path.read_text(encoding="utf-8"))
+    else:
+        tools = parse_security_tools_yaml(registry_path.read_text(encoding="utf-8"))
+    mcp_tools, errors = _cached_mcp_tools(mcp_path)
+    global _last_mcp_discovery_errors
+    _last_mcp_discovery_errors = list(errors)
+    return [*tools, *mcp_tools]
+
+
+def get_mcp_discovery_errors() -> list[str]:
+    return list(_last_mcp_discovery_errors)
+
+
+def _cached_mcp_tools(path: Path | None) -> tuple[tuple[SecurityTool, ...], tuple[str, ...]]:
+    resolved = resolve_mcp_config_path(path)
+    modified = resolved.stat().st_mtime_ns if resolved.exists() else 0
+    return _discover_mcp_tools_cached(str(resolved), modified)
+
+
+@lru_cache(maxsize=8)
+def _discover_mcp_tools_cached(path: str, _: int) -> tuple[tuple[SecurityTool, ...], tuple[str, ...]]:
+    tools, errors = discover_mcp_security_tools(Path(path))
+    return tuple(tools), tuple(errors)
 
 
 def parse_security_tools_yaml(text: str) -> list[SecurityTool]:
@@ -62,6 +86,8 @@ def mcp_tool_to_security_tool(descriptor: dict[str, Any]) -> SecurityTool:
         read_only=bool(annotations.get("readOnlyHint", False)),
         timeout_seconds=int(metadata.get("timeout_seconds") or 30),
         description=str(descriptor.get("description") or "MCP security tool"),
+        mcp_tool_name=str(descriptor.get("name") or "mcp_tool"),
+        input_schema=dict(descriptor.get("inputSchema") or {"type": "object"}),
     )
 
 

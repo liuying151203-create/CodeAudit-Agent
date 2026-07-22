@@ -1,0 +1,21 @@
+{
+  "protocol_version": "2025-11-25",
+  "servers": [
+    {
+      "name": "security-server",
+      "command": "python",
+      "args": ["path/to/read_only_mcp_server.py"],
+      "enabled": true,
+      "timeout_seconds": 30,
+      "env_passthrough": [],
+      "allowed_tools": ["scan_source"],
+      "defaults": {
+        "supported_languages": ["Python", "Java"],
+        "risk_types": ["SQL Injection", "Command Execution"],
+        "capabilities": ["scan_sql_patterns", "scan_command_execution"],
+        "supported_modes": ["repo_scan", "diff_scan"],
+        "cost_level": "medium"
+      }
+    }
+  ]
+}

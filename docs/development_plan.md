@@ -17,8 +17,10 @@
 - LLM 未配置或调用失败时的模板降级。
 - Markdown、JSON、SARIF 报告和基础 Agent trace。
 - FastAPI 接口和基于 LangGraph 事件流的 Streamlit 审计工作台。
+- GitHub Action、Code Scanning、PR Comment 和受控 MCP stdio 工具接入。
+- 报告保留策略、SARIF 校验和工程运行指标。
 
-当前实现与目标设计的主要差距是 GitHub Action、PR Comment 和 MCP Adapter 尚未完成集成。
+设计说明中的七个开发阶段已经完成，当前进入持续验证和规则质量迭代。
 
 ## 2. 实施原则
 
@@ -152,6 +154,8 @@
 - Demo 可以完整展示至少一个 Python 仓库和一个 Git diff 场景。
 
 ## 9. 阶段七：工程集成
+
+状态：已完成（2026-07-22）。
 
 ### 开发内容
 

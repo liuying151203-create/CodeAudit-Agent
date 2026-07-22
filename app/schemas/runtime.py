@@ -38,6 +38,10 @@ class AuditMetrics(BaseModel):
     total_tokens: int = 0
     total_latency_ms: int = 0
     stage_coverage: dict[str, str] = Field(default_factory=dict)
+    sarif_result_count: int = 0
+    report_file_bytes: int = 0
+    retained_report_count: int = 0
+    pruned_report_count: int = 0
 
 
 class FallbackRecord(BaseModel):

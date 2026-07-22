@@ -15,7 +15,12 @@ def report_dir() -> Path:
 def list_reports() -> list[dict[str, Any]]:
     reports = []
     for path in sorted(report_dir().glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
-        data = json.loads(path.read_text(encoding="utf-8"))
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if not all(key in data for key in ("report_id", "mode", "summary")):
+            continue
         reports.append({"report_id": data["report_id"], "mode": data["mode"], "summary": data["summary"], "json_path": str(path)})
     return reports
 
