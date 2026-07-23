@@ -40,20 +40,22 @@ def _inject_styles() -> None:
         """
         <style>
         :root {
-            --ca-ink: #17212b;
-            --ca-muted: #607080;
-            --ca-border: #d9e1e8;
+            --ca-ink: #10212f;
+            --ca-muted: #4b6071;
+            --ca-border: #c8d5df;
             --ca-surface: #ffffff;
-            --ca-canvas: #f5f8fa;
-            --ca-accent: #087f8c;
+            --ca-canvas: #f2f6f8;
+            --ca-accent: #066b78;
             --ca-blue: #2563eb;
-            --ca-danger: #b42318;
-            --ca-warn: #b54708;
-            --ca-ok: #18794e;
+            --ca-danger: #a61b12;
+            --ca-warn: #934400;
+            --ca-ok: #12633f;
         }
-        .stApp { background: var(--ca-canvas); color: var(--ca-ink); }
+        .stApp, [data-testid="stAppViewContainer"] { background: var(--ca-canvas); color: var(--ca-ink); }
+        .stApp p, .stApp li, .stApp label, .stApp [data-testid="stMarkdownContainer"], .stApp [data-testid="stCaptionContainer"] { color: var(--ca-ink); }
         [data-testid="stHeader"] { background: rgba(245, 248, 250, 0.94); }
-        [data-testid="stSidebar"] { border-right: 1px solid var(--ca-border); background: #edf3f6; }
+        [data-testid="stSidebar"] { border-right: 1px solid var(--ca-border); background: #e8f0f4; }
+        [data-testid="stSidebar"] p, [data-testid="stSidebar"] label, [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] { color: var(--ca-ink); }
         [data-testid="stSidebar"] .block-container { padding-top: 1.4rem; }
         .block-container { padding-top: 1.4rem; padding-bottom: 3rem; max-width: 1500px; }
         .ca-header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 0 0 1rem; border-bottom: 1px solid var(--ca-border); margin-bottom: 1rem; }
@@ -61,22 +63,33 @@ def _inject_styles() -> None:
         .ca-subtitle { color: var(--ca-muted); font-size: 0.9rem; margin-top: 0.25rem; }
         .ca-kicker { color: var(--ca-accent); font-size: 0.76rem; font-weight: 700; text-transform: uppercase; }
         .ca-badges, .ca-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
-        .ca-badge, .ca-chip { display: inline-flex; align-items: center; min-height: 1.65rem; padding: 0.18rem 0.55rem; border: 1px solid var(--ca-border); border-radius: 6px; background: var(--ca-surface); color: #344454; font-size: 0.76rem; line-height: 1.2; }
-        .ca-badge.ok { border-color: #9ac7b4; color: var(--ca-ok); background: #f0faf5; }
-        .ca-badge.warn { border-color: #e8b98b; color: var(--ca-warn); background: #fff8f0; }
-        .ca-badge.error { border-color: #efaaa4; color: var(--ca-danger); background: #fff5f4; }
+        .ca-badge, .ca-chip { display: inline-flex; align-items: center; min-height: 1.65rem; padding: 0.18rem 0.55rem; border: 1px solid var(--ca-border); border-radius: 6px; background: var(--ca-surface); color: #213849; font-size: 0.76rem; line-height: 1.2; font-weight: 650; }
+        .ca-badge.ok { border-color: #74b796; color: #0b5132; background: #e6f6ed; }
+        .ca-badge.warn { border-color: #d99d58; color: #783600; background: #fff1df; }
+        .ca-badge.error { border-color: #df8780; color: #7d1710; background: #fde9e7; }
         .ca-severity { display: inline-flex; padding: 0.16rem 0.48rem; border-radius: 5px; font-size: 0.72rem; font-weight: 750; text-transform: uppercase; }
         .ca-severity.critical, .ca-severity.high { color: #9f1c13; background: #feeceb; }
         .ca-severity.medium { color: #9a4d00; background: #fff1dc; }
         .ca-severity.low, .ca-severity.info { color: #1559a5; background: #eaf3ff; }
         .ca-status-row { display: flex; justify-content: space-between; gap: 0.75rem; padding: 0.38rem 0; border-bottom: 1px solid #dce5ea; font-size: 0.8rem; }
         .ca-status-row:last-child { border-bottom: 0; }
-        .ca-status-value { color: var(--ca-muted); text-align: right; overflow-wrap: anywhere; }
+        .ca-status-value { color: #40576a; text-align: right; overflow-wrap: anywhere; font-weight: 560; }
         div[data-testid="stMetric"] { background: var(--ca-surface); border: 1px solid var(--ca-border); border-radius: 7px; padding: 0.7rem 0.85rem; }
         div[data-testid="stMetric"] label { color: var(--ca-muted); }
+        [data-testid="stMetricValue"], [data-testid="stMetricDelta"] { color: var(--ca-ink); }
         div[data-testid="stExpander"] { border-color: var(--ca-border); border-radius: 7px; background: var(--ca-surface); }
         div[data-testid="stForm"], div[data-testid="stVerticalBlockBorderWrapper"] { border-radius: 7px; }
-        .stButton button, .stDownloadButton button { border-radius: 6px; font-weight: 650; }
+        .stButton button, .stDownloadButton button { border-radius: 6px; border: 1px solid #075d68; background: #087783; color: #ffffff; font-weight: 700; }
+        .stButton button:hover, .stDownloadButton button:hover { border-color: #044d57; background: #055f6a; color: #ffffff; }
+        .stButton button:focus-visible, .stDownloadButton button:focus-visible { outline: 3px solid #85c8d1; outline-offset: 2px; }
+        .stButton button:disabled, .stDownloadButton button:disabled { border-color: #b7c5ce; background: #dce5ea; color: #40576a; opacity: 1; }
+        [data-baseweb="input"], [data-baseweb="textarea"], [data-baseweb="select"] > div { background: #ffffff; border-color: #aebfcb; }
+        [data-baseweb="input"] input, [data-baseweb="textarea"] textarea, [data-baseweb="select"] * { color: var(--ca-ink); }
+        [data-baseweb="input"] input::placeholder, [data-baseweb="textarea"] textarea::placeholder { color: #667f91; opacity: 1; }
+        [data-baseweb="tab"] { color: #40576a; font-weight: 650; }
+        [data-baseweb="tab"][aria-selected="true"] { color: #055f6a; font-weight: 750; }
+        [data-testid="stSegmentedControl"] button { color: #314a5d; background: #ffffff; border-color: #afbfca; font-weight: 650; }
+        [data-testid="stSegmentedControl"] button[aria-checked="true"] { color: #ffffff; background: #087783; border-color: #075d68; }
         .stTabs [data-baseweb="tab-list"] { gap: 0.25rem; border-bottom: 1px solid var(--ca-border); }
         .stTabs [data-baseweb="tab"] { border-radius: 5px 5px 0 0; }
         code { overflow-wrap: anywhere; }
